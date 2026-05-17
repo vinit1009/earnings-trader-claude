@@ -36,6 +36,8 @@ One row per currently-open Alpaca position. Prune (delete or archive) when a pos
 | Original Thesis | Text | ≤200 chars, your one-sentence rationale |
 | Target Price | Number | original ladder target |
 | Stop Plan | Text | e.g. "GTC stop -8%" or "fade if gap > implied" |
+| Hard Stop Price | Number (dollar) | the computed stop level; downstream phases enforce |
+| Implied Move Proxy % | Number | historical mean abs(next-day return) from prior 4 prints |
 | Ladder Rungs Filled | Number | count of filled rungs out of total |
 | Avg Entry Price | Number | Alpaca position.avg_entry_price |
 | Current P&L % | Number | refreshed each phase (signed, e.g. -3.2) |

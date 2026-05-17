@@ -34,7 +34,57 @@ These are **non-negotiable**. If any of these are true, skip the ticker and do n
 - **Stock halted** or no quote available
 - **Already-open position in this ticker would exceed the $500 per-position cap** (check account-snapshot first)
 - **You're at 3 concurrent positions and don't already own this one** (the broker will reject anyway, but don't propose to begin with)
+- **Same industry/sector already held** — `propose` blocks any new ticker whose `finnhub_industry` matches an open position. Three semis is one bet with 3× size. The override `--allow-sector-double` exists for rare cases (e.g., the second name is a hedge), use sparingly.
 - **Today's realized P&L is at or below -$200** (daily loss cap — `propose` will block buys, no exits to manage)
+- **Implied-move classification is `fade_candidate_skip`** — tape has overreacted past 1.5× the historical earnings move. We can't short, so we skip.
+
+## Decision rules — market regime gate (NEW, check FIRST)
+
+`account-snapshot` now emits a `market_regime` block:
+```
+"market_regime": {
+    "regime": "TRENDING_UP",          # or RANGEBOUND / STRESSED / CRISIS / UNKNOWN
+    "spy_price": 588.12,
+    "spy_50dma": 575.40,
+    "spy_pct_above_50dma": 2.21,
+    "spy_1d_pct": 0.45,
+    "spy_5d_pct": 1.30
+}
+```
+
+Adjust playbook by regime:
+
+| Regime | Posture |
+|---|---|
+| **TRENDING_UP** | Normal sizing. Lean into PEAD. Hold winners longer. |
+| **RANGEBOUND** | Normal sizing. Prefer high-conviction only (composite ≥4). |
+| **STRESSED** | **All sizing × 0.5.** Skip composite 2–3 entirely. Prefer fade setups over rides (mean-revert is more reliable when the broader tape is heavy). |
+| **CRISIS** | **No new opens.** Only manage existing positions (tighten stops, take profit fast). |
+| **UNKNOWN** | Be conservative. Treat as RANGEBOUND. Flag the unknown in your Discord summary. |
+
+## Decision rules — implied-move classifier (NEW, run BEFORE composite signal)
+
+Every reporter in the `fetch-amc-context` output now carries an `implied_move` block:
+```
+"implied_move": {
+    "proxy_pct": 5.4,         # historical mean abs(next-day return) over prior 4 quarters
+    "current_move_pct": -2.1, # current AH move relative to previous close
+    "ah_move_ratio": 0.39,    # |current_move| / proxy_pct
+    "classification": "pead_candidate"
+}
+```
+
+`classification` is one of:
+
+| Class | Ratio | What it means | Action |
+|---|---|---|---|
+| `pead_candidate` | < 0.5 | Tape is *underreacting* to the print | Lean in — PEAD tends to extend over hours/days |
+| `neutral` | 0.5–1.0 | In-line with history | Normal sizing |
+| `partial_take_candidate` | 1.0–1.5 | Tape matches the typical move | Trade only if other signal is strong; consider take-half-off plan |
+| `fade_candidate_skip` | > 1.5 | Tape is *overreacting* | **Skip the long.** We don't short; this is a mean-revert setup that doesn't fit. |
+| `unknown` | n/a | No history or candle data | Be cautious; fall back to composite alone |
+
+A `fade_candidate_skip` is a hard skip *unless* the composite is ≥6 and headlines clearly justify the move (e.g., a once-in-a-decade triple-beat). Default to skipping.
 
 ## Decision rules — composite signal
 
@@ -63,22 +113,55 @@ For the survivors of the hard skips, build a composite from these inputs:
 - `bullish - bearish` < 2 → **weak signal** — skip
 - `bullish - bearish ≤ -2` → **bearish** — skip (MVP doesn't open shorts)
 
-## Sizing & ladder shape
+## Sizing — four-tier conviction grading (replaces the old $400/$250 split)
 
-Default ladder for a buy proposal:
+Compute the tier from three inputs that are all in the `fetch-amc-context` + `account-snapshot` output: **composite signal**, **implied-move ratio** (`implied_move.ah_move_ratio`), and **market regime**.
 
-- `target` = `quote.current * 0.98` (enter 2% below the AH tape — don't chase)
-- `shares` = `floor(position_usd / target)`
-- `down-band` = 0.08 (8% below target → lowest rung)
-- `up-band` = 0.02 (2% above target → highest rung)
-- `rungs` = 10
-- `weight-ratio` = 5.0 (heaviest weight on the lowest rungs)
-- `extended-hours` = true (so the order is eligible for AH execution)
-- `tif` = day
+| Tier | Composite | Implied-move ratio | Regime | Notional (base) |
+|---|---|---|---|---|
+| **S** | ≥ 6 | < 0.7 (under-reaction) | TRENDING_UP | **$450** |
+| **A** | 4–5 | < 1.0 | TRENDING_UP or RANGEBOUND | **$350** |
+| **B** | 4–5 | 1.0–1.3 | any non-CRISIS | **$200** |
+| **C** | 2–3 | < 1.0 | TRENDING_UP only | **$150** |
+| **skip** | other combos | — | — | — |
 
-**Per-ticker overrides** in `watchlist.yaml` (e.g. TSLA 15%/8% bands, NVDA 12%/7%) should override the defaults — read the YAML and use those values.
+Then apply the regime multiplier:
+- TRENDING_UP / RANGEBOUND → × 1.0 (use base)
+- STRESSED → **× 0.5** (halve every tier)
+- CRISIS → **× 0.0** (no new opens at all)
 
-**Fade mode**: if the tape is already extended *in our favor* (>+8% after-hours), reduce position size by 50% AND widen the down-band by 1.5x (an overshoot is more likely to mean-revert than to keep running). Mention "fade mode" in the rationale.
+Shares = `floor(notional / target)`. Target = `quote.current * 0.98` (enter 2% below the tape; don't chase).
+
+### Hard stop (NEW — set on every entry)
+
+After `propose` returns successfully, the result includes `recommended_hard_stop`. Write that value into the new Notion Positions row's **`Hard Stop Price`** field. The stop is computed as:
+
+```
+stop_pct = max(0.05, implied_move_proxy_pct/100 * 0.75)   # floor 5%, never tighter than 75% of implied
+hard_stop = avg_fill_estimate * (1 - stop_pct)
+```
+
+You must pass `--implied-move-pct <value>` when calling `propose` so it uses the correct proxy. Otherwise the stop defaults to 5%.
+
+The actual Alpaca stop-limit sell order is **not placed in this phase** (shares haven't filled yet). ah-close at 19:55 ET reads the Notion row and calls `place-stop` once the position is filled.
+
+### Ladder shape (unchanged)
+
+- `down-band` = 0.08, `up-band` = 0.02, `rungs` = 10, `weight-ratio` = 5.0
+- `extended-hours` = true, `tif` = day
+- Per-ticker overrides in `watchlist.yaml` (TSLA 15%/8%, NVDA 12%/7%) still apply when those tickers trigger.
+
+### Examples
+
+- NVDA strong beat + raised guidance, composite 7, AH +3% vs 6% implied (ratio 0.5), TRENDING_UP → **Tier S, $450 notional**.
+- AVGO beat, composite 4, AH +4% vs 5% implied (ratio 0.8), RANGEBOUND → **Tier A, $350**.
+- INTC beat-and-fade language, composite 3, AH +2% vs 3.5% implied (ratio 0.57), TRENDING_UP → **Tier C, $150**.
+- Same INTC setup but regime STRESSED → **Tier C × 0.5 = $75, but $75 is below our practical minimum — SKIP**.
+- Any setup at composite ≥6 BUT ratio > 1.5 → `fade_candidate_skip` from the implied-move filter; SKIP regardless of tier.
+
+### Fade mode (kept for the edge case)
+
+If a tier-S/A setup is the only one tonight AND the tape is +8% already (ratio ≈ 1.3) but you still want exposure: reduce size 50% AND widen down-band to 0.12. Mention "fade mode" in the rationale. Use sparingly — the implied-move filter exists precisely to flag this.
 
 ## Rationale format
 

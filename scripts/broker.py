@@ -71,6 +71,24 @@ class Broker(ABC):
     def place_limit(self, order: LimitOrder) -> OrderStatus: ...
 
     @abstractmethod
+    def place_stop_limit(
+        self,
+        symbol: str,
+        qty: float,
+        stop_price: float,
+        limit_price: float | None = None,
+        *,
+        tif: str = "gtc",
+        extended_hours: bool = False,
+    ) -> OrderStatus:
+        """Place a stop-limit SELL order to enforce a hard stop on a held position.
+
+        When the market crosses `stop_price`, the order becomes a limit sell at
+        `limit_price` (defaults to `stop_price * 0.99` for slippage buffer). The
+        order is GTC by default so it survives across phases.
+        """
+
+    @abstractmethod
     def cancel(self, order_id: str) -> None: ...
 
     def place_ladder(self, orders: Iterable[LimitOrder]) -> list[OrderStatus]:

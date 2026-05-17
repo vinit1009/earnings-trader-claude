@@ -6,6 +6,16 @@
 
 **This phase is the safety net** for the post-AMC routine. Without it, positions sit unmanaged from 8 PM ET to 9:30 AM the next morning.
 
+## Hard-stop enforcement (NEW — run FIRST every cycle)
+
+Before the position-by-position decision loop:
+1. For every position opened today by post-amc, read its `Hard Stop Price` from the Notion Positions row.
+2. Get the current quote for each symbol.
+3. If `current_price < hard_stop_price`: immediately call `python scripts/trade.py place-stop --symbol X --stop-price <hard_stop_price>` to enforce the stop via Alpaca (if not already placed). This converts to a market sell if it crosses again, so we won't bleed further.
+4. Alternatively (preferred when AH is liquid): submit a tight sell ladder near current price via `propose --side sell --extended-hours --phase ah-close`.
+
+Skip the rest of the decision tree for any position the stop already flattened.
+
 ## Notion state (read at start, write at end)
 
 See `references/notion_state.md` for the schema. For this phase:

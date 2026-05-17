@@ -85,6 +85,7 @@ def _fetch_earnings_context(
     news_hours: int,              # 0 = skip news fetch (preview); else hours of news to pull
 ) -> int:
     from earnings import (
+        compute_implied_move_proxy,
         get_company_metrics,
         get_company_news,
         get_quote,
@@ -194,6 +195,24 @@ def _fetch_earnings_context(
         news = (get_company_news(e.symbol, hours=news_hours) or []) if news_hours > 0 else []
         history = get_recent_earnings(e.symbol, quarters=4)
 
+        implied_move_pct = compute_implied_move_proxy(e.symbol, history)
+        current_move_pct = q.pct_change() if q else None
+        if implied_move_pct and current_move_pct is not None and implied_move_pct > 0:
+            ah_move_ratio = abs(current_move_pct) / implied_move_pct
+        else:
+            ah_move_ratio = None
+
+        if ah_move_ratio is None:
+            move_classification = "unknown"
+        elif ah_move_ratio < 0.5:
+            move_classification = "pead_candidate"
+        elif ah_move_ratio < 1.0:
+            move_classification = "neutral"
+        elif ah_move_ratio < 1.5:
+            move_classification = "partial_take_candidate"
+        else:
+            move_classification = "fade_candidate_skip"
+
         out.append(
             {
                 "symbol": e.symbol,
@@ -246,6 +265,12 @@ def _fetch_earnings_context(
                     }
                     for h in history
                 ],
+                "implied_move": {
+                    "proxy_pct": implied_move_pct,
+                    "current_move_pct": current_move_pct,
+                    "ah_move_ratio": ah_move_ratio,
+                    "classification": move_classification,
+                },
             }
         )
 
@@ -444,17 +469,20 @@ def cmd_daily_summary(args) -> int:
 
 def cmd_account_snapshot(args) -> int:
     from broker import load_broker
+    from earnings import get_market_regime
     from risk import (
         AccountSnapshot,
         MAX_CONCURRENT_POSITIONS,
         MAX_DAILY_LOSS_USD,
         MAX_PER_POSITION_USD,
+        MAX_PER_SECTOR_POSITIONS,
     )
 
     broker = load_broker()
     acct = broker.get_account()
     snap = AccountSnapshot.from_broker(broker)
     positions = broker.list_positions()
+    regime = get_market_regime()
 
     _emit(
         {
@@ -477,10 +505,12 @@ def cmd_account_snapshot(args) -> int:
                 for p in positions
             ],
             "position_count": len(positions),
+            "market_regime": regime,
             "risk_caps": {
                 "max_per_position_usd": MAX_PER_POSITION_USD,
                 "max_concurrent_positions": MAX_CONCURRENT_POSITIONS,
                 "max_daily_loss_usd": MAX_DAILY_LOSS_USD,
+                "max_per_sector_positions": MAX_PER_SECTOR_POSITIONS,
             },
             "headroom": {
                 "remaining_position_slots": max(
@@ -533,7 +563,7 @@ def cmd_list_orders(args) -> int:
 async def _propose_async(args) -> int:
     from broker import BrokerError, load_broker
     from discord_bot import ApprovalBot
-    from earnings import get_quote
+    from earnings import get_company_metrics, get_quote
     from ladder import average_fill_price, build_ladder
     from risk import AccountSnapshot, check_orders
 
@@ -555,7 +585,22 @@ async def _propose_async(args) -> int:
     quote = get_quote(args.symbol)
     current_price = quote.current if quote else None
     snapshot = AccountSnapshot.from_broker(broker)
-    risk = check_orders(orders, snapshot, current_price=current_price)
+
+    industries: dict[str, str] = {}
+    if args.side == "buy":
+        all_syms = {args.symbol.upper()} | set(snapshot.open_positions.keys())
+        for sym in all_syms:
+            m = get_company_metrics(sym)
+            if m and m.finnhub_industry:
+                industries[sym] = m.finnhub_industry
+
+    risk = check_orders(
+        orders,
+        snapshot,
+        current_price=current_price,
+        industries=industries,
+        allow_sector_double=getattr(args, "allow_sector_double", False),
+    )
     if not risk.allowed:
         _emit(
             {
@@ -624,11 +669,19 @@ async def _propose_async(args) -> int:
             f"(ladder_id=`{ladder_id}`)"
         )
 
+        recommended_hard_stop = None
+        if args.side == "buy":
+            implied = getattr(args, "implied_move_pct", None) or 0.0
+            stop_pct = max(0.05, (implied / 100.0) * 0.75) if implied > 0 else 0.05
+            avg_fill_est = average_fill_price(orders)
+            recommended_hard_stop = round(avg_fill_est * (1 - stop_pct), 2)
+
         _emit(
             {
                 "approved": True,
                 "placed": True,
                 "ladder_id": ladder_id,
+                "recommended_hard_stop": recommended_hard_stop,
                 "orders": [
                     {
                         "order_id": s.order_id,
@@ -645,6 +698,49 @@ async def _propose_async(args) -> int:
 
 def cmd_propose(args) -> int:
     return asyncio.run(_propose_async(args))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: place-stop  (hard-stop enforcement, called by ah-close/premarket/open-drift)
+# ---------------------------------------------------------------------------
+
+
+def cmd_place_stop(args) -> int:
+    from broker import BrokerError, load_broker
+
+    broker = load_broker()
+    pos = broker.get_position(args.symbol)
+    if pos is None:
+        _emit({"placed": False, "symbol": args.symbol, "reason": "no open position"})
+        return 1
+    qty = args.qty if args.qty else pos.qty
+    if qty <= 0:
+        _emit({"placed": False, "symbol": args.symbol, "reason": "qty <= 0"})
+        return 1
+    try:
+        status = broker.place_stop_limit(
+            symbol=args.symbol,
+            qty=qty,
+            stop_price=args.stop_price,
+            limit_price=args.limit_price,
+            tif="gtc",
+            extended_hours=args.extended_hours,
+        )
+    except BrokerError as e:
+        _emit({"placed": False, "symbol": args.symbol, "error": str(e)})
+        return 1
+    _emit(
+        {
+            "placed": True,
+            "order_id": status.order_id,
+            "symbol": status.symbol,
+            "qty": status.qty,
+            "stop_price": args.stop_price,
+            "limit_price": args.limit_price or round(args.stop_price * 0.99, 2),
+            "tif": "gtc",
+        }
+    )
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -785,7 +881,29 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Build ladder + risk-check but don't post to Discord or place orders",
     )
+    p_prop.add_argument(
+        "--allow-sector-double",
+        action="store_true",
+        help="Override the sector correlation cap (allow a second position in the same industry)",
+    )
+    p_prop.add_argument(
+        "--implied-move-pct",
+        type=float,
+        default=0.0,
+        help="Historical implied-move proxy for this ticker (used to size the hard stop). 0 = use 5% floor.",
+    )
     p_prop.set_defaults(fn=cmd_propose)
+
+    p_stop = sub.add_parser(
+        "place-stop",
+        help="Place a GTC stop-limit SELL to enforce a hard stop on an existing position",
+    )
+    p_stop.add_argument("--symbol", required=True)
+    p_stop.add_argument("--stop-price", required=True, type=float)
+    p_stop.add_argument("--limit-price", type=float, help="Limit price (default: stop * 0.99)")
+    p_stop.add_argument("--qty", type=float, help="Shares (default: full position)")
+    p_stop.add_argument("--extended-hours", action="store_true")
+    p_stop.set_defaults(fn=cmd_place_stop)
 
     p_cancel = sub.add_parser("cancel", help="Cancel one open order")
     p_cancel.add_argument("--order-id", required=True)

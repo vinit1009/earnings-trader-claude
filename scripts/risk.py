@@ -18,6 +18,7 @@ MAX_PER_POSITION_USD: float = 500.0
 MAX_CONCURRENT_POSITIONS: int = 3
 MAX_DAILY_LOSS_USD: float = 200.0
 MAX_PRICE_DEVIATION_PCT: float = 0.15
+MAX_PER_SECTOR_POSITIONS: int = 1
 
 
 @dataclass(frozen=True)
@@ -63,8 +64,16 @@ def check_orders(
     orders: Sequence[LimitOrder],
     account: AccountSnapshot,
     current_price: float | None = None,
+    *,
+    industries: dict[str, str] | None = None,
+    allow_sector_double: bool = False,
 ) -> RiskDecision:
-    """Validate a set of ladder orders against all risk caps."""
+    """Validate a set of ladder orders against all risk caps.
+
+    `industries` is an optional symbol->finnhubIndustry map covering at least the new
+    symbol and every currently-open position. When provided, sector-correlation cap is
+    enforced. `allow_sector_double` bypasses that check (manual override only).
+    """
     if not orders:
         return RiskDecision.deny("empty order list")
 
@@ -92,6 +101,19 @@ def check_orders(
                     f"would open {symbol} as position #{account.open_count + 1}, "
                     f"cap {MAX_CONCURRENT_POSITIONS}"
                 )
+
+        if industries and not allow_sector_double:
+            new_industry = (industries.get(symbol) or "").strip().lower()
+            if new_industry and symbol not in account.open_positions:
+                for other_sym in account.open_positions:
+                    other_industry = (industries.get(other_sym) or "").strip().lower()
+                    if other_industry and other_industry == new_industry:
+                        return RiskDecision.deny(
+                            f"sector cap: {symbol} (industry={new_industry!r}) would be "
+                            f"position #{1 + sum(1 for s in account.open_positions if (industries.get(s) or '').strip().lower() == new_industry)} "
+                            f"in this industry; existing holder {other_sym}. "
+                            f"Override with --allow-sector-double."
+                        )
 
     if account.pnl_today <= -MAX_DAILY_LOSS_USD and side == "buy":
         return RiskDecision.deny(

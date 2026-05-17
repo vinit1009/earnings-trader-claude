@@ -9,7 +9,7 @@ import os
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderStatus as AlpacaStatus, TimeInForce
-from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest
+from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest, StopLimitOrderRequest
 from alpaca.common.exceptions import APIError
 
 from broker import AccountInfo, Broker, BrokerError, OrderStatus, Position
@@ -117,6 +117,40 @@ class AlpacaBroker(Broker):
             raise BrokerError(
                 f"alpaca submit_order {order.side} {order.qty} {order.symbol} @ "
                 f"${order.price:.2f}: {e}"
+            ) from e
+        return self._to_status(placed)
+
+    def place_stop_limit(
+        self,
+        symbol: str,
+        qty: float,
+        stop_price: float,
+        limit_price: float | None = None,
+        *,
+        tif: str = "gtc",
+        extended_hours: bool = False,
+    ) -> OrderStatus:
+        if limit_price is None:
+            limit_price = round(stop_price * 0.99, 2)
+        tif_map = {
+            "day": TimeInForce.DAY,
+            "gtc": TimeInForce.GTC,
+        }
+        tif_enum = tif_map.get(tif.lower(), TimeInForce.GTC)
+        req = StopLimitOrderRequest(
+            symbol=symbol.upper(),
+            qty=qty,
+            side=OrderSide.SELL,
+            time_in_force=tif_enum,
+            stop_price=stop_price,
+            limit_price=limit_price,
+            extended_hours=extended_hours,
+        )
+        try:
+            placed = self._client.submit_order(order_data=req)
+        except APIError as e:
+            raise BrokerError(
+                f"alpaca place_stop_limit {qty} {symbol} stop=${stop_price:.2f}: {e}"
             ) from e
         return self._to_status(placed)
 

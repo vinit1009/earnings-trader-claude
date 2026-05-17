@@ -301,6 +301,124 @@ def get_quote(symbol: str) -> Quote | None:
     )
 
 
+def get_market_regime() -> dict:
+    """Classify the market regime from SPY trend + recent volatility.
+
+    We use SPY-only because Finnhub free tier doesn't cleanly expose ^VIX. SPY's own
+    1d/5d returns and distance from its 50DMA carry most of the same information —
+    when SPY breaks down, realized vol rises in correlation.
+
+    Returns:
+        {regime, spy_price, spy_50dma, spy_pct_above_50dma, spy_1d_pct, spy_5d_pct, reason}
+    """
+    today = _dt.date.today()
+    start = today - _dt.timedelta(days=110)
+    spy_quote = get_quote("SPY")
+    if not spy_quote:
+        return {"regime": "UNKNOWN", "reason": "no SPY quote"}
+    try:
+        raw = _with_rate_limit(
+            _client().stock_candles,
+            "SPY",
+            "D",
+            int(_dt.datetime.combine(start, _dt.time.min).timestamp()),
+            int(_dt.datetime.combine(today, _dt.time.max).timestamp()),
+        )
+    except FinnhubAPIException as e:
+        return {"regime": "UNKNOWN", "reason": f"SPY candle fetch failed: {e}"}
+    if not raw or raw.get("s") != "ok":
+        return {"regime": "UNKNOWN", "reason": "no SPY candle data"}
+    closes = raw.get("c") or []
+    if len(closes) < 50:
+        return {"regime": "UNKNOWN", "reason": f"only {len(closes)} SPY candles"}
+
+    spy_50dma = sum(closes[-50:]) / 50.0
+    spy_price = spy_quote.current
+    spy_pct_above_50dma = (spy_price - spy_50dma) / spy_50dma * 100
+    spy_1d_pct = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0.0
+    spy_5d_pct = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 6 else 0.0
+
+    if spy_1d_pct < -2.0 and spy_5d_pct < -5.0:
+        regime = "CRISIS"
+    elif spy_pct_above_50dma < -2.0 or spy_5d_pct < -3.0:
+        regime = "STRESSED"
+    elif spy_pct_above_50dma > 1.0 and spy_5d_pct > 0:
+        regime = "TRENDING_UP"
+    else:
+        regime = "RANGEBOUND"
+
+    return {
+        "regime": regime,
+        "spy_price": round(spy_price, 2),
+        "spy_50dma": round(spy_50dma, 2),
+        "spy_pct_above_50dma": round(spy_pct_above_50dma, 2),
+        "spy_1d_pct": round(spy_1d_pct, 2),
+        "spy_5d_pct": round(spy_5d_pct, 2),
+        "reason": "spy-based classification",
+    }
+
+
+def _post_print_abs_move_pct(symbol: str, print_date: _dt.date) -> float | None:
+    """Absolute % move on the trading day after `print_date`.
+
+    Uses Finnhub /stock/candle (daily resolution). Free tier supports this for US stocks
+    but history is capped (~12 months back). Returns None if we can't determine the move.
+
+    Approximation: compares `print_date`'s close to the next available close. For an AMC
+    print this is print_day → print_day+1. For a BMO print this is print_day-1 →
+    print_day (and the first window after print_date will already include both).
+    """
+    try:
+        end = print_date + _dt.timedelta(days=7)
+        raw = _with_rate_limit(
+            _client().stock_candles,
+            symbol.upper(),
+            "D",
+            int(_dt.datetime.combine(print_date - _dt.timedelta(days=2), _dt.time.min).timestamp()),
+            int(_dt.datetime.combine(end, _dt.time.max).timestamp()),
+        )
+    except FinnhubAPIException as e:
+        log.info("candle fetch failed for %s @ %s: %s", symbol, print_date, e)
+        return None
+    if not raw or raw.get("s") != "ok":
+        return None
+    closes = raw.get("c") or []
+    if len(closes) < 2:
+        return None
+    base = closes[0]
+    next_close = closes[1]
+    if base == 0:
+        return None
+    return abs((next_close - base) / base) * 100
+
+
+def compute_implied_move_proxy(
+    symbol: str, prior_quarters: list[EarningsEvent]
+) -> float | None:
+    """Mean absolute next-day-return over the last 4 earnings prints, in percent.
+
+    This stands in for the options-implied move (which the free Finnhub tier doesn't expose).
+    The mean of |1-day return| around a stock's last 4 prints is a reasonable proxy:
+    if the stock has historically moved ~5% on earnings, ~5% is a fair baseline expectation.
+
+    Returns None if we can't compute (no history, candle endpoint dry).
+    """
+    moves: list[float] = []
+    for q in prior_quarters:
+        if not q.date:
+            continue
+        try:
+            d = _dt.date.fromisoformat(q.date)
+        except ValueError:
+            continue
+        m = _post_print_abs_move_pct(symbol, d)
+        if m is not None:
+            moves.append(m)
+    if not moves:
+        return None
+    return sum(moves) / len(moves)
+
+
 def get_company_metrics(symbol: str) -> CompanyMetrics | None:
     """Fetch market cap, avg volume, exchange/country/share-class for filtering.
 
