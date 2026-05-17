@@ -12,6 +12,24 @@ NOTION_HANDOFFS_PAGE_ID    Handoffs page (5 level-2 sections)
 NOTION_OBSERVATIONS_PAGE_ID Observations page
 ```
 
+## Stale-position rule (every phase)
+
+Before any per-phase work, query the Positions DB for rows with `Opened Date` more than **5 trading days** before today (ET). These are stale earnings trades — the PEAD effect has decayed; what was a thesis-driven trade has become a directional bet you never planned. Force-flatten via:
+
+```
+python scripts/trade.py propose --symbol X --side sell --rationale "stale earnings trade (>5 days)" \
+    --target <current_price> --shares <position_qty> --down-band 0.03 --up-band 0.05 --rungs 5 \
+    --phase <this-phase>
+```
+
+Even AH-only phases (ah-close) do this; the sell ladder may not fill until next session, but the order is in.
+
+Computing "5 trading days ago":
+- Monday → previous Monday (or earlier if there's a holiday)
+- Tuesday–Friday → 7 calendar days ago is a safe approximation (it includes the prior weekend, so 5 trading days ≈ 7 calendar days). If precise: count back 5 weekdays.
+
+After flattening, archive the Notion row.
+
 ## When to read / write per phase
 
 | Phase | Read | Write |

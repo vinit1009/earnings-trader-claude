@@ -38,6 +38,35 @@ These are **non-negotiable**. If any of these are true, skip the ticker and do n
 - **Today's realized P&L is at or below -$200** (daily loss cap — `propose` will block buys, no exits to manage)
 - **Implied-move classification is `fade_candidate_skip`** — tape has overreacted past 1.5× the historical earnings move. We can't short, so we skip.
 
+## Decision rules — trading mode gate (NEW, check before macro-event)
+
+`account-snapshot` returns a `trading_mode` block based on today's running P&L:
+
+| Mode | P&L threshold | Behavior |
+|---|---|---|
+| `normal` | > -$100 | Standard playbook |
+| `cautious` | -$100 to -$150 | Only tier S/A new opens; no opens in last hour of regular session |
+| `defensive` | -$150 to -$180 | **No new opens.** Flatten any position down >5% immediately. |
+| `exit_only` | -$180 to -$200 | Flatten all positions with negative P&L. No new orders except sells. |
+| `halt` | ≤ -$200 | Cancel every open order. No orders of any kind. Discord alert. |
+
+`risk.check_orders` enforces these — even if you call `propose`, the CLI will reject. But knowing the mode upfront saves the wasted call. Mention the mode in your Discord summary.
+
+## Decision rules — macro-event gate (NEW, check before anything else)
+
+`account-snapshot` now emits a `macro_events` block. Check `today_events` and `tomorrow_events`:
+
+| Event today/tomorrow | Behavior in post-amc |
+|---|---|
+| `fomc` | **Tier S only.** Most catalysts get overwhelmed by Fed positioning. |
+| `cpi` | **Tier S only.** Same reasoning. |
+| `nfp` (next-day) | Normal sizing — but downgrade tier by 1 for any name that's macro-sensitive (banks, homebuilders). |
+| `opex_fridays` (next-day) | Skip new opens with high beta to SPX. Sized positions still OK. |
+| `market_closed` next day | **Skip all new opens.** Holiday-next-day flow is unreliable. |
+| (none) | Standard playbook. |
+
+`open-drift` and `premarket` have stricter rules: see those strategy docs.
+
 ## Decision rules — market regime gate (NEW, check FIRST)
 
 `account-snapshot` now emits a `market_regime` block:
@@ -131,6 +160,19 @@ Then apply the regime multiplier:
 - CRISIS → **× 0.0** (no new opens at all)
 
 Shares = `floor(notional / target)`. Target = `quote.current * 0.98` (enter 2% below the tape; don't chase).
+
+### Realized-vol sizing modifier (NEW)
+
+Each reporter now carries `realized_vol_30d_pct` — annualized vol from the last 30 daily candles. Use it to fine-tune the tier:
+
+| Realized vol (annualized) | Modifier |
+|---|---|
+| < 20% (sleepy: KO, JNJ, PG) | **+1 tier** — a strong beat on a low-vol name is rare and meaningful |
+| 20–45% | No modifier |
+| 45–70% | No modifier (already volatile baseline) |
+| > 70% (PLTR, RIVN, MSTR) | **−1 tier** — today's move could be noise; let the trade prove itself |
+
+Tier downgrade below C → skip. Tier upgrade above S → cap at S.
 
 ### Hard stop (NEW — set on every entry)
 

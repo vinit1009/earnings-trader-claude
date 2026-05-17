@@ -6,6 +6,13 @@
 1. **Overnight position review**: for positions held from yesterday, has the thesis flipped? News since 8 PM ET, analyst rating changes, futures direction, pre-market price action.
 2. **BMO scan**: companies that released earnings before market open (BMO) between 4 AM and 7 AM. Same composite-signal decision logic as post-amc, applied to morning reporters.
 
+## Macro-event gate (NEW — check FIRST)
+
+`account-snapshot` returns `macro_events.today_events`. If today is `fomc`, `cpi`, or `nfp`:
+- **No BMO opens** regardless of signal strength.
+- For held overnight positions: tighten stops 2% closer to current pre-market price.
+- Default to flattening any held position that's already against thesis pre-market (don't ride a thesis into a macro print).
+
 ## Notion state (read at start, write at end)
 
 See `references/notion_state.md` for the schema. For this phase:

@@ -1,0 +1,54 @@
+# Macro event blackout calendar.
+#
+# On these dates the broader market reaction (FOMC, CPI prints, NFP, OPEX) will
+# overwhelm any individual earnings catalyst. Strategy: skip new opens at most
+# phases; only tier-S setups in post-amc are allowed on FOMC/CPI days.
+#
+# Update monthly when the Fed / BLS / CME calendar refreshes.
+# All dates ISO-8601 (YYYY-MM-DD). All times implicit America/New_York.
+
+2026:
+  # Federal Reserve rate decisions (publicly announced ~6 months ahead)
+  fomc:
+    - "2026-06-17"
+    - "2026-07-29"
+    - "2026-09-16"
+    - "2026-10-28"
+    - "2026-12-09"
+
+  # CPI release days (BLS publishes ~13th of each month)
+  cpi:
+    - "2026-06-10"
+    - "2026-07-15"
+    - "2026-08-12"
+    - "2026-09-10"
+    - "2026-10-15"
+    - "2026-11-13"
+    - "2026-12-10"
+
+  # Non-farm payrolls (first Friday each month, generally)
+  nfp:
+    - "2026-06-05"
+    - "2026-07-02"
+    - "2026-08-07"
+    - "2026-09-04"
+    - "2026-10-02"
+    - "2026-11-06"
+    - "2026-12-04"
+
+  # Standard monthly options expiration (3rd Friday)
+  opex_fridays:
+    - "2026-06-19"
+    - "2026-07-17"
+    - "2026-08-21"
+    - "2026-09-18"
+    - "2026-10-16"
+    - "2026-11-20"
+    - "2026-12-18"
+
+  # Major holidays — market closed
+  market_closed:
+    - "2026-07-03"   # Independence Day (observed)
+    - "2026-09-07"   # Labor Day
+    - "2026-11-26"   # Thanksgiving
+    - "2026-12-25"   # Christmas

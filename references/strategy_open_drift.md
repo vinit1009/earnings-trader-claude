@@ -8,6 +8,17 @@
 
 This is the last chance to set the entry/exit for the day before the regular session starts.
 
+## Macro-event gate (NEW — check FIRST)
+
+`account-snapshot` returns `macro_events.today_events`. If today is `fomc`, `cpi`, or `nfp`:
+- **No new opens.** Only manage existing positions.
+- Tighten any stops 2% closer to current price (macro days have outsized intraday vol).
+- For PEAD rides: consider taking partial profits before the macro print drops.
+
+If today is `opex_fridays`: scale ladders × 0.7 for any new entries (vol clusters around 3 PM as dealers gamma-hedge).
+
+If today is `market_closed`: routine shouldn't fire on holidays (cron exemption noted in scheduling), but if it does — exit cleanly.
+
 ## Notion state (read at start, write at end)
 
 See `references/notion_state.md` for the schema. For this phase:

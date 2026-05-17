@@ -72,6 +72,47 @@ def _emit(data) -> None:
     print(json.dumps(data, indent=2, default=str))
 
 
+def _check_macro_events() -> dict:
+    """Cross-check today + tomorrow against references/macro_calendar.yaml.
+
+    Returns a dict listing any matching event categories. Empty lists mean no
+    blackout in effect.
+    """
+    import yaml
+
+    calendar_path = REPO_ROOT / "references" / "macro_calendar.yaml"
+    today = _dt.date.today()
+    tomorrow = today + _dt.timedelta(days=1)
+    result = {
+        "today": today.isoformat(),
+        "tomorrow": tomorrow.isoformat(),
+        "today_events": [],
+        "tomorrow_events": [],
+        "market_closed_today": False,
+        "market_closed_tomorrow": False,
+    }
+    if not calendar_path.exists():
+        return result
+    try:
+        with open(calendar_path) as f:
+            cfg = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return result
+    year_block = cfg.get(today.year) or {}
+    for category, dates in year_block.items():
+        if not isinstance(dates, list):
+            continue
+        if today.isoformat() in dates:
+            result["today_events"].append(category)
+            if category == "market_closed":
+                result["market_closed_today"] = True
+        if tomorrow.isoformat() in dates:
+            result["tomorrow_events"].append(category)
+            if category == "market_closed":
+                result["market_closed_tomorrow"] = True
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Subcommand: fetch-amc-context
 # ---------------------------------------------------------------------------
@@ -89,6 +130,7 @@ def _fetch_earnings_context(
         get_company_metrics,
         get_company_news,
         get_quote,
+        get_realized_vol,
         get_recent_earnings,
         get_upcoming_earnings,
     )
@@ -196,6 +238,7 @@ def _fetch_earnings_context(
         history = get_recent_earnings(e.symbol, quarters=4)
 
         implied_move_pct = compute_implied_move_proxy(e.symbol, history)
+        realized_vol_30d = get_realized_vol(e.symbol, days=30)
         current_move_pct = q.pct_change() if q else None
         if implied_move_pct and current_move_pct is not None and implied_move_pct > 0:
             ah_move_ratio = abs(current_move_pct) / implied_move_pct
@@ -271,6 +314,7 @@ def _fetch_earnings_context(
                     "ah_move_ratio": ah_move_ratio,
                     "classification": move_classification,
                 },
+                "realized_vol_30d_pct": realized_vol_30d,
             }
         )
 
@@ -476,6 +520,7 @@ def cmd_account_snapshot(args) -> int:
         MAX_DAILY_LOSS_USD,
         MAX_PER_POSITION_USD,
         MAX_PER_SECTOR_POSITIONS,
+        get_trading_mode,
     )
 
     broker = load_broker()
@@ -483,6 +528,8 @@ def cmd_account_snapshot(args) -> int:
     snap = AccountSnapshot.from_broker(broker)
     positions = broker.list_positions()
     regime = get_market_regime()
+    macro = _check_macro_events()
+    trading_mode = get_trading_mode(acct.pnl_today())
 
     _emit(
         {
@@ -506,6 +553,8 @@ def cmd_account_snapshot(args) -> int:
             ],
             "position_count": len(positions),
             "market_regime": regime,
+            "macro_events": macro,
+            "trading_mode": trading_mode,
             "risk_caps": {
                 "max_per_position_usd": MAX_PER_POSITION_USD,
                 "max_concurrent_positions": MAX_CONCURRENT_POSITIONS,

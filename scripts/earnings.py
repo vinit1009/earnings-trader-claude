@@ -301,6 +301,43 @@ def get_quote(symbol: str) -> Quote | None:
     )
 
 
+def get_realized_vol(symbol: str, days: int = 30) -> float | None:
+    """Annualized realized volatility from daily log-returns over last `days` candles.
+
+    Returns percent (e.g. 35.2 means 35.2% annualized vol). None on insufficient data.
+    Free Finnhub /stock/candle supports US daily candles for at least the last 12 months.
+    """
+    import math
+
+    today = _dt.date.today()
+    start = today - _dt.timedelta(days=max(60, int(days * 1.6)))
+    try:
+        raw = _with_rate_limit(
+            _client().stock_candles,
+            symbol.upper(),
+            "D",
+            int(_dt.datetime.combine(start, _dt.time.min).timestamp()),
+            int(_dt.datetime.combine(today, _dt.time.max).timestamp()),
+        )
+    except FinnhubAPIException as e:
+        log.info("realized-vol fetch failed for %s: %s", symbol, e)
+        return None
+    if not raw or raw.get("s") != "ok":
+        return None
+    closes = raw.get("c") or []
+    if len(closes) < days + 1:
+        return None
+    closes = closes[-(days + 1):]
+    log_returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
+    if not log_returns:
+        return None
+    mean = sum(log_returns) / len(log_returns)
+    var = sum((r - mean) ** 2 for r in log_returns) / max(1, len(log_returns) - 1)
+    daily_stdev = math.sqrt(var)
+    annualized_pct = daily_stdev * math.sqrt(252) * 100
+    return round(annualized_pct, 2)
+
+
 def get_market_regime() -> dict:
     """Classify the market regime from SPY trend + recent volatility.
 

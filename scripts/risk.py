@@ -20,6 +20,40 @@ MAX_DAILY_LOSS_USD: float = 200.0
 MAX_PRICE_DEVIATION_PCT: float = 0.15
 MAX_PER_SECTOR_POSITIONS: int = 1
 
+# Trading-mode tripwire thresholds (today's P&L in USD).
+MODE_CAUTIOUS_THRESHOLD: float = -100.0
+MODE_DEFENSIVE_THRESHOLD: float = -150.0
+MODE_EXIT_ONLY_THRESHOLD: float = -180.0
+MODE_HALT_THRESHOLD: float = -200.0
+
+
+def get_trading_mode(pnl_today: float) -> dict:
+    """Classify today's posture based on running P&L.
+
+    Modes (descending P&L):
+        - normal: standard playbook
+        - cautious: only tier S/A new opens; no opens in last hour
+        - defensive: no new opens; flatten positions down >5%
+        - exit-only: flatten all losers; no new orders except sells
+        - halt: cancel everything, no orders allowed
+    """
+    if pnl_today <= MODE_HALT_THRESHOLD:
+        mode = "halt"
+        rule = "cancel every open order; no orders of any kind allowed"
+    elif pnl_today <= MODE_EXIT_ONLY_THRESHOLD:
+        mode = "exit_only"
+        rule = "flatten all positions with negative P&L; no new orders except sells"
+    elif pnl_today <= MODE_DEFENSIVE_THRESHOLD:
+        mode = "defensive"
+        rule = "no new opens; flatten any position down >5% immediately"
+    elif pnl_today <= MODE_CAUTIOUS_THRESHOLD:
+        mode = "cautious"
+        rule = "only tier S/A new opens; no new opens in the last hour of session"
+    else:
+        mode = "normal"
+        rule = "standard playbook"
+    return {"mode": mode, "rule": rule, "pnl_today": round(pnl_today, 2)}
+
 
 @dataclass(frozen=True)
 class AccountSnapshot:
@@ -115,10 +149,17 @@ def check_orders(
                             f"Override with --allow-sector-double."
                         )
 
-    if account.pnl_today <= -MAX_DAILY_LOSS_USD and side == "buy":
+    mode_info = get_trading_mode(account.pnl_today)
+    mode = mode_info["mode"]
+    if side == "buy" and mode in ("defensive", "exit_only", "halt"):
         return RiskDecision.deny(
-            f"P&L today ${account.pnl_today:.2f} at/below "
-            f"-${MAX_DAILY_LOSS_USD:.2f}; new entries blocked (exits still allowed)"
+            f"trading mode={mode!r} (P&L today ${account.pnl_today:.2f}); "
+            f"new buys blocked. Rule: {mode_info['rule']}"
+        )
+    if mode == "halt":
+        return RiskDecision.deny(
+            f"trading mode=halt (P&L today ${account.pnl_today:.2f}); "
+            f"no orders of any kind. Rule: {mode_info['rule']}"
         )
 
     if current_price is not None and current_price > 0:
