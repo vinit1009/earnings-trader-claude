@@ -22,6 +22,26 @@ See `references/notion_state.md` for the schema. For this phase:
 
 **Concurrency note**: this phase fires at 16:05, only 4 minutes after post-amc starts at 16:01. Post-amc may still be running. That's OK — read the Daily Log as a snapshot; anything missing from it will appear in ah-close's row tonight or tomorrow's recap.
 
+## Auto-tuning feedback loop (NEW — run BEFORE writing recap)
+
+Pull rolling 5-day stats:
+```
+python scripts/trade.py rolling-stats --days 5
+```
+
+Compare against thresholds and append a suggestion to the Observations page if any cross. Suggestion format: a single bullet under the current `## Week of YYYY-MM-DD` section, dated, with a specific recommendation.
+
+| Stat | Trigger | Suggestion to append |
+|---|---|---|
+| `win_rate_pct < 40` | 5-day window | "Win rate %.1f%% over last 5 days. Signal degradation — consider raising composite floor from +2 to +3 OR investigating which sectors/regimes are dragging." |
+| `expectancy_per_trade_usd < 0` | 5-day window | "Negative expectancy: avg win $%.2f vs avg loss -$%.2f. The system is losing money on net. Pause new opens and review tomorrow's amc-brief manually." |
+| `ladder_fill_rate_pct < 25` | 5-day window | "Ladders filling at only %.1f%% — bands are too wide. Try tightening `down-band` from 0.08 → 0.05 in `references/strategy_post_amc.md`." |
+| `wins > 0` AND avg_win > 1.5 × avg_loss | 5-day window | "Healthy expectancy ratio (avg win $%.2f vs avg loss -$%.2f). Consider widening down-band 0.08 → 0.10 to catch more entries on quality setups." |
+
+If multiple triggers fire, pick the **most severe** (negative expectancy > low win rate > fill rate problems > tuning hints).
+
+Post-amc reads the most recent week's Observations bullets at start. So a suggestion appended tonight is applied to tomorrow's playbook.
+
 ## Workflow
 
 1. `python scripts/trade.py daily-summary` → JSON with today's fills, by-symbol netting, current positions, account state.

@@ -750,6 +750,151 @@ def cmd_propose(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: fetch-press-release  (SEC EDGAR 8-K Item 2.02 text)
+# ---------------------------------------------------------------------------
+
+
+def cmd_fetch_press_release(args) -> int:
+    from edgar import fetch_latest_earnings_8k
+
+    on_or_after = None
+    if args.since:
+        try:
+            on_or_after = _dt.date.fromisoformat(args.since)
+        except ValueError:
+            _emit({"error": f"invalid --since {args.since!r} (use YYYY-MM-DD)"})
+            return 1
+
+    release = fetch_latest_earnings_8k(
+        args.symbol, on_or_after=on_or_after, max_chars=args.max_chars
+    )
+    if release is None:
+        _emit({"found": False, "symbol": args.symbol.upper()})
+        return 0
+    _emit(
+        {
+            "found": True,
+            "symbol": release.symbol,
+            "cik": release.cik,
+            "accession_number": release.accession_number,
+            "filing_date": release.filing_date,
+            "primary_doc_url": release.primary_doc_url,
+            "item_codes": release.item_codes,
+            "char_count": len(release.text),
+            "text": release.text,
+        }
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: rolling-stats  (used by daily-recap to detect strategy drift)
+# ---------------------------------------------------------------------------
+
+
+def cmd_rolling_stats(args) -> int:
+    """Compute win rate / expectancy / fill rate from the last N days of fills."""
+    from broker import load_broker
+
+    broker = load_broker()
+    today = _dt.date.today()
+    cutoff_date = today - _dt.timedelta(days=args.days * 2)
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+
+        req = GetOrdersRequest(status="closed", after=cutoff_date.isoformat(), limit=500)
+        raw_orders = broker._client.get_orders(filter=req)
+    except Exception as e:
+        _emit({"error": f"order pull failed: {e}", "days": args.days})
+        return 1
+
+    fills_by_symbol: dict[str, list[dict]] = {}
+    submitted_by_symbol: dict[str, int] = {}
+    for o in raw_orders:
+        sym = o.symbol
+        submitted_by_symbol[sym] = submitted_by_symbol.get(sym, 0) + 1
+        if not o.filled_at:
+            continue
+        fills_by_symbol.setdefault(sym, []).append(
+            {
+                "side": str(o.side).split(".")[-1].lower(),
+                "qty": float(o.filled_qty or 0),
+                "price": float(o.filled_avg_price or 0),
+                "filled_at": o.filled_at,
+            }
+        )
+
+    roundtrips: list[dict] = []
+    for sym, fills in fills_by_symbol.items():
+        fills.sort(key=lambda f: f["filled_at"])
+        buy_q: list[dict] = []
+        for f in fills:
+            if f["side"] == "buy":
+                buy_q.append(f)
+                continue
+            qty_to_close = f["qty"]
+            while qty_to_close > 0 and buy_q:
+                buy = buy_q[0]
+                take = min(qty_to_close, buy["qty"])
+                pnl = (f["price"] - buy["price"]) * take
+                roundtrips.append(
+                    {
+                        "symbol": sym,
+                        "opened_at": buy["filled_at"].isoformat() if buy["filled_at"] else None,
+                        "closed_at": f["filled_at"].isoformat() if f["filled_at"] else None,
+                        "qty": take,
+                        "buy_price": buy["price"],
+                        "sell_price": f["price"],
+                        "pnl_usd": round(pnl, 2),
+                        "pnl_pct": round((f["price"] - buy["price"]) / buy["price"] * 100, 2),
+                    }
+                )
+                qty_to_close -= take
+                buy["qty"] -= take
+                if buy["qty"] <= 1e-6:
+                    buy_q.pop(0)
+
+    window_start = today - _dt.timedelta(days=args.days)
+    in_window = [
+        r for r in roundtrips
+        if r["closed_at"] and r["closed_at"][:10] >= window_start.isoformat()
+    ]
+
+    wins = [r for r in in_window if r["pnl_usd"] > 0]
+    losses = [r for r in in_window if r["pnl_usd"] < 0]
+    total = len(in_window)
+    win_rate = len(wins) / total * 100 if total else None
+    avg_win = sum(r["pnl_usd"] for r in wins) / len(wins) if wins else 0.0
+    avg_loss = sum(r["pnl_usd"] for r in losses) / len(losses) if losses else 0.0
+    expectancy = (
+        (len(wins) / total) * avg_win + (len(losses) / total) * avg_loss
+        if total else None
+    )
+
+    submitted_total = sum(submitted_by_symbol.values())
+    filled_total = sum(len(v) for v in fills_by_symbol.values())
+    fill_rate = filled_total / submitted_total * 100 if submitted_total else None
+
+    _emit(
+        {
+            "window_days": args.days,
+            "window_start": window_start.isoformat(),
+            "window_end": today.isoformat(),
+            "roundtrip_count": total,
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate_pct": round(win_rate, 1) if win_rate is not None else None,
+            "avg_win_usd": round(avg_win, 2),
+            "avg_loss_usd": round(avg_loss, 2),
+            "expectancy_per_trade_usd": round(expectancy, 2) if expectancy is not None else None,
+            "ladder_fill_rate_pct": round(fill_rate, 1) if fill_rate is not None else None,
+            "recent_roundtrips": in_window[-10:],
+        }
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: place-stop  (hard-stop enforcement, called by ah-close/premarket/open-drift)
 # ---------------------------------------------------------------------------
 
@@ -942,6 +1087,25 @@ def main(argv: list[str] | None = None) -> int:
         help="Historical implied-move proxy for this ticker (used to size the hard stop). 0 = use 5% floor.",
     )
     p_prop.set_defaults(fn=cmd_propose)
+
+    p_press = sub.add_parser(
+        "fetch-press-release",
+        help="Fetch the latest 8-K Item 2.02 (earnings release) from SEC EDGAR",
+    )
+    p_press.add_argument("--symbol", required=True)
+    p_press.add_argument(
+        "--since",
+        help="Only return filings on/after this date (YYYY-MM-DD). Default: 2 days ago.",
+    )
+    p_press.add_argument("--max-chars", type=int, default=15000)
+    p_press.set_defaults(fn=cmd_fetch_press_release)
+
+    p_stats = sub.add_parser(
+        "rolling-stats",
+        help="Compute win rate / expectancy / fill rate over the last N days for feedback loop",
+    )
+    p_stats.add_argument("--days", type=int, default=5)
+    p_stats.set_defaults(fn=cmd_rolling_stats)
 
     p_stop = sub.add_parser(
         "place-stop",

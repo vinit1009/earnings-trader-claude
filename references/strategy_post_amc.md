@@ -24,6 +24,27 @@ See `references/notion_state.md` for the schema. For this phase:
 4. For each proposal, call `trade.py propose ...` with a one- to two-sentence `--rationale`. The Discord embed shows your rationale to the user, who taps ✅ or ❌.
 5. After all reporters are processed, summarize what you did (skipped X, proposed Y, placed Z) and exit.
 
+## Read the press release (NEW — for any reporter you're seriously considering)
+
+Finnhub headlines + sentiment cover the surface. The press release (8-K Item 2.02) has the substance: full guidance language, segment performance, share count, buyback authorizations, executive commentary.
+
+For each reporter that survives the hard-skip filter:
+```
+python scripts/trade.py fetch-press-release --symbol X --since YYYY-MM-DD
+```
+
+This pulls the latest 8-K from SEC EDGAR. The output's `text` field is the cleaned press release (capped at ~15K chars by default). Read it before deciding sizing. Look for:
+
+- **Forward guidance**: a tight range (e.g., "EPS $5.10–$5.15") is more confident than a wide one ("$4.80–$5.30") or a withdrawal.
+- **Segment performance**: a beat driven by one segment (data center for NVDA) vs across-the-board.
+- **Share count changes**: large buybacks announced concurrent with earnings are often defensive.
+- **Tone shifts**: a CEO who normally talks about "headwinds" but doesn't this quarter is signaling confidence.
+- **"Non-GAAP" framing**: heavy non-GAAP adjustments can mask weakness.
+
+If the press release contradicts the headlines (e.g., headlines say "raised guidance" but the actual release lowers FY range), trust the release. Lower composite by 2 points.
+
+Requires `www.sec.gov` allowlisted in the cloud environment. If the call returns `found: false`, fall back to Finnhub headlines + sentiment.
+
 ## Decision rules — hard skips (never propose)
 
 These are **non-negotiable**. If any of these are true, skip the ticker and do not propose:
