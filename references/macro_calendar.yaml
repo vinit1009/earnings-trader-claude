@@ -8,8 +8,12 @@
 # All dates ISO-8601 (YYYY-MM-DD). All times implicit America/New_York.
 
 2026:
-  # Federal Reserve rate decisions (publicly announced ~6 months ahead)
+  # Federal Reserve rate decisions — second/final day of each FOMC meeting.
+  # Verified against federalreserve.gov/monetarypolicy/fomccalendars.htm.
   fomc:
+    - "2026-01-28"
+    - "2026-03-18"
+    - "2026-04-29"
     - "2026-06-17"
     - "2026-07-29"
     - "2026-09-16"
