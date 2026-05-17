@@ -77,7 +77,13 @@ def _emit(data) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_fetch_amc_context(args) -> int:
+def _fetch_earnings_context(
+    args,
+    *,
+    window: str,                  # "amc" or "bmo"
+    require_actuals: bool,        # post-print mode vs preview mode
+    news_hours: int,              # 0 = skip news fetch (preview); else hours of news to pull
+) -> int:
     from earnings import (
         get_company_metrics,
         get_company_news,
@@ -120,21 +126,24 @@ def cmd_fetch_amc_context(args) -> int:
         all_events = get_upcoming_earnings(
             days=1, watchlist=None, from_date=target_date
         )
-        amc_events = [
+        def _hour_match(e):
+            return (window == "amc" and e.is_amc) or (window == "bmo" and e.is_bmo)
+
+        window_events = [
             e
             for e in all_events
-            if e.is_amc
-            and e.eps_actual is not None
+            if _hour_match(e)
+            and (not require_actuals or e.eps_actual is not None)
             and e.date == target_date.isoformat()
         ]
         logging.info(
-            "fetch-amc-context: %d AMC reporters today before filtering",
-            len(amc_events),
+            "fetch %s: %d reporters today before filtering (require_actuals=%s)",
+            window, len(window_events), require_actuals,
         )
 
         events = []
         rejected = []
-        for e in amc_events:
+        for e in window_events:
             m = get_company_metrics(e.symbol)
             if m is None:
                 rejected.append({"symbol": e.symbol, "reason": "no metrics data"})
@@ -164,7 +173,7 @@ def cmd_fetch_amc_context(args) -> int:
             {
                 "reporters": [],
                 "filtered_out": rejected,
-                "note": "no AMC reporters passed filters today",
+                "note": f"no {window.upper()} reporters passed filters today",
             }
         )
         return 0
@@ -182,7 +191,7 @@ def cmd_fetch_amc_context(args) -> int:
             # Re-fetch fresh quote (the one inside get_company_metrics may be stale by a few sec)
             q = get_quote(e.symbol)
 
-        news = get_company_news(e.symbol, hours=1) or []
+        news = (get_company_news(e.symbol, hours=news_hours) or []) if news_hours > 0 else []
         history = get_recent_earnings(e.symbol, quarters=4)
 
         out.append(
@@ -251,6 +260,178 @@ def cmd_fetch_amc_context(args) -> int:
                 "min_price": min_price,
                 "common_stock_only": common_stock_only,
             },
+        }
+    )
+    return 0
+
+
+# Thin wrappers for each window/mode.
+def cmd_fetch_amc_context(args) -> int:
+    return _fetch_earnings_context(
+        args, window="amc", require_actuals=True, news_hours=1
+    )
+
+
+def cmd_fetch_bmo_context(args) -> int:
+    return _fetch_earnings_context(
+        args, window="bmo", require_actuals=True, news_hours=12
+    )
+
+
+def cmd_fetch_earnings_preview(args) -> int:
+    """Pre-print mode: list reporters who are EXPECTED to release in `--window`
+    today, with estimates + prior quarter history. No actuals required, no
+    news fetch. Used by amc-brief (3:50 PM ET) and premarket (7:00 AM ET)."""
+    return _fetch_earnings_context(
+        args, window=args.window, require_actuals=False, news_hours=0
+    )
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: review-positions
+# ---------------------------------------------------------------------------
+
+
+def cmd_review_positions(args) -> int:
+    from broker import load_broker
+    from earnings import get_company_news, get_quote
+
+    broker = load_broker()
+    positions = broker.list_positions()
+    open_orders = broker.list_open_orders()
+
+    out = []
+    for p in positions:
+        sym = p.symbol.upper()
+        q = get_quote(sym)
+        pct_change_since_entry = (
+            (p.avg_entry_price - q.current) / q.current * 100
+            if q is not None and p.avg_entry_price > 0
+            else None
+        )
+        news = (
+            get_company_news(sym, hours=args.news_hours) or []
+            if args.news_hours > 0
+            else []
+        )
+        ords = [
+            {
+                "order_id": o.order_id,
+                "side": o.side,
+                "qty": o.qty,
+                "filled_qty": o.filled_qty,
+                "price": o.price,
+                "status": o.status,
+                "extended_hours": o.extended_hours,
+            }
+            for o in open_orders
+            if o.symbol.upper() == sym
+        ]
+        out.append(
+            {
+                "symbol": sym,
+                "qty": p.qty,
+                "avg_entry_price": p.avg_entry_price,
+                "market_value": p.market_value,
+                "unrealized_pl": p.unrealized_pl,
+                "current_price": q.current if q else None,
+                "pct_change_today": q.pct_change() if q else None,
+                "pct_vs_entry": (
+                    (q.current - p.avg_entry_price) / p.avg_entry_price * 100
+                    if q and p.avg_entry_price > 0
+                    else None
+                ),
+                "open_orders_for_symbol": ords,
+                "headlines": [
+                    {
+                        "headline": n.headline,
+                        "source": n.source,
+                        "published_at": n.published_at.isoformat(),
+                        "summary": n.summary[:240] if n.summary else "",
+                    }
+                    for n in news[:15]
+                ],
+            }
+        )
+
+    _emit({"positions": out, "count": len(out)})
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: daily-summary
+# ---------------------------------------------------------------------------
+
+
+def cmd_daily_summary(args) -> int:
+    """End-of-day rollup. Pulls today's fills + current positions + P&L.
+    Used by the daily-recap routine to post a Discord summary."""
+    import datetime as _dt
+    from broker import load_broker, BrokerError
+
+    broker = load_broker()
+    acct = broker.get_account()
+    positions = broker.list_positions()
+
+    today_iso = _dt.date.today().isoformat()
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+
+        req = GetOrdersRequest(status="closed", after=today_iso)
+        raw_orders = broker._client.get_orders(filter=req)
+    except Exception as e:
+        raw_orders = []
+        logging.warning("could not pull today's closed orders: %s", e)
+
+    fills = []
+    for o in raw_orders:
+        if not o.filled_at:
+            continue
+        fills.append(
+            {
+                "order_id": str(o.id),
+                "symbol": o.symbol,
+                "side": str(o.side).split(".")[-1].lower(),
+                "qty": float(o.filled_qty or 0),
+                "price": float(o.filled_avg_price or 0),
+                "filled_at": o.filled_at.isoformat() if o.filled_at else None,
+            }
+        )
+
+    by_symbol: dict[str, dict] = {}
+    for f in fills:
+        s = by_symbol.setdefault(
+            f["symbol"], {"symbol": f["symbol"], "buys": 0.0, "sells": 0.0, "buy_qty": 0.0, "sell_qty": 0.0}
+        )
+        if f["side"] == "buy":
+            s["buys"] += f["price"] * f["qty"]
+            s["buy_qty"] += f["qty"]
+        else:
+            s["sells"] += f["price"] * f["qty"]
+            s["sell_qty"] += f["qty"]
+
+    _emit(
+        {
+            "date": today_iso,
+            "account": {
+                "cash": acct.cash,
+                "equity": acct.equity,
+                "last_equity": acct.last_equity,
+                "pnl_today": acct.pnl_today(),
+            },
+            "fills_today_count": len(fills),
+            "by_symbol": list(by_symbol.values()),
+            "open_positions": [
+                {
+                    "symbol": p.symbol,
+                    "qty": p.qty,
+                    "avg_entry_price": p.avg_entry_price,
+                    "market_value": p.market_value,
+                    "unrealized_pl": p.unrealized_pl,
+                }
+                for p in positions
+            ],
+            "open_position_count": len(positions),
         }
     )
     return 0
@@ -525,6 +706,41 @@ def main(argv: list[str] | None = None) -> int:
         help="Test mode: use earnings calendar from a specific YYYY-MM-DD (default: today).",
     )
     p_fetch.set_defaults(fn=cmd_fetch_amc_context)
+
+    p_fetch_bmo = sub.add_parser(
+        "fetch-bmo-context",
+        help="Emit JSON context for today's BMO (before-market-open) reporters",
+    )
+    p_fetch_bmo.add_argument("--symbol", action="append")
+    p_fetch_bmo.add_argument("--for-date")
+    p_fetch_bmo.set_defaults(fn=cmd_fetch_bmo_context)
+
+    p_prev = sub.add_parser(
+        "fetch-earnings-preview",
+        help="Pre-print mode: list EXPECTED reporters (estimates only, no actuals required) with prior quarter history. For amc-brief / premarket planning.",
+    )
+    p_prev.add_argument("--window", choices=["amc", "bmo"], required=True)
+    p_prev.add_argument("--symbol", action="append")
+    p_prev.add_argument("--for-date")
+    p_prev.set_defaults(fn=cmd_fetch_earnings_preview)
+
+    p_review = sub.add_parser(
+        "review-positions",
+        help="JSON: open positions with current price + P&L + recent news per ticker. For ah-close / premarket / open-drift.",
+    )
+    p_review.add_argument(
+        "--news-hours",
+        type=int,
+        default=4,
+        help="Hours of news to pull per ticker (default 4)",
+    )
+    p_review.set_defaults(fn=cmd_review_positions)
+
+    p_summary = sub.add_parser(
+        "daily-summary",
+        help="JSON: today's fills, by-symbol netted P&L, current positions. For daily-recap.",
+    )
+    p_summary.set_defaults(fn=cmd_daily_summary)
 
     p_acct = sub.add_parser(
         "account-snapshot",
