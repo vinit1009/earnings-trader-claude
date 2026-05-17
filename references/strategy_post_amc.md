@@ -18,7 +18,7 @@ See `references/notion_state.md` for the schema. For this phase:
 
 ## Workflow
 
-1. Call `python ~/.claude/skills/earnings-trader/scripts/trade.py fetch-amc-context` → JSON of today's AMC reporters on the watchlist, with print numbers, current quote, recent headlines, and prior quarters' surprise history.
+1. Call `python scripts/trade.py fetch-amc-context` → JSON of **every** US-listed AMC reporter today that passes the universe filter (market cap ≥$2B, avg volume ≥1M, price ≥$5, US common stock — no hand-picked ticker list), with print numbers, current quote, recent headlines, and prior quarters' surprise history. Expect 5–25 names on a busy day, 0 on a quiet one.
 2. Call `account-snapshot` → confirm current positions and risk headroom (you can't propose anything if caps are hit).
 3. For **each** reporter, analyze and decide: skip, or propose a buy ladder. Follow the decision rules below — they are constraints, not suggestions.
 4. For each proposal, call `trade.py propose ...` with a one- to two-sentence `--rationale`. The Discord embed shows your rationale to the user, who taps ✅ or ❌.
@@ -116,4 +116,4 @@ Check `account-snapshot` at the start to see remaining headroom — if you're at
 
 ## When to skip the whole phase
 
-If `fetch-amc-context` returns zero reporters, exit cleanly. Don't search for trades outside the watchlist — that's the whole point of the watchlist.
+If `fetch-amc-context` returns zero reporters, exit cleanly. Zero is fine — it means no US company reporting after-market today passed the liquidity/size filter. Don't try to relax the filter on the fly to find trades; the filter exists to keep us out of illiquid AH names. A quiet day is a quiet day.
