@@ -6,6 +6,18 @@
 
 **Does NOT propose trades. Does NOT modify positions.** Pure informational.
 
+## Notion state (read at start, write at end)
+
+See `references/notion_state.md` for the schema. For this phase:
+
+**Read at start:**
+- `Positions` DB — for context only (so the brief can mention "we still hold X from yesterday")
+- `Observations` page — pattern notes from last week, surface to user if relevant ("last week we faded on raised-guidance — be skeptical tonight")
+
+**Write at end:**
+- `Daily Log` DB — append one row (Run Title=`YYYY-MM-DD amc-brief`, Phase=amc-brief, Status=ok, Trades Proposed=0, Summary=Discord brief text)
+- No Positions updates. No Handoffs writes (post-amc reads its own context from the prints).
+
 ## Workflow
 
 1. `python scripts/trade.py fetch-earnings-preview --window amc` → JSON of today's filtered AMC reporters with estimates + prior 4 quarters' surprise history. No actuals yet (the prints haven't dropped).

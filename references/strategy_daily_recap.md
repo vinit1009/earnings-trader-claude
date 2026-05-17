@@ -6,6 +6,22 @@
 
 **Does NOT trade.** Pure reporting.
 
+## Notion state (read at start, write at end)
+
+See `references/notion_state.md` for the schema. For this phase:
+
+**Read at start:**
+- `Daily Log` DB — filter by Date=today, read every row (one per phase that ran). This is your source of truth for "what proposals/approvals/fills happened today" — far more reliable than scraping Discord.
+- `Positions` DB — current open positions for the "open positions (unrealized)" section of the recap.
+- `Handoffs` page, section `open-drift → daily-recap` — notes from open-drift on what to highlight. After reading, **clear this section**.
+
+**Write at end:**
+- `Daily Log` DB — append your own row (Run Title=`YYYY-MM-DD daily-recap`, Phase=daily-recap, Status, Trades Proposed=0, Realized P&L Today from `daily-summary` CLI, Summary=Discord recap)
+- `Observations` page — if you spotted a pattern worth flagging (3 consecutive fades, ladder fill <30%, etc.), append a bullet under the current week's `## Week of YYYY-MM-DD` section. Create the section if it doesn't exist.
+- `Handoffs` page, section `daily-recap → next-day post-amc` — replace with ≤5 bullets for tomorrow's post-amc routine (e.g. "Yesterday's NVDA still drifting +1.2% — PEAD active, prefer hold over fade on similar setups tomorrow")
+
+**Concurrency note**: this phase fires at 16:05, only 4 minutes after post-amc starts at 16:01. Post-amc may still be running. That's OK — read the Daily Log as a snapshot; anything missing from it will appear in ah-close's row tonight or tomorrow's recap.
+
 ## Workflow
 
 1. `python scripts/trade.py daily-summary` → JSON with today's fills, by-symbol netting, current positions, account state.

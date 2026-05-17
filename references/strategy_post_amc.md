@@ -2,6 +2,20 @@
 
 Invoked by a /schedule routine at **16:01 America/New_York** on weekdays. You (Claude) are the brain; `trade.py` is the body — it fetches data, builds ladders, posts to Discord for approval, and places orders. Your job is to read the data, apply judgment, and decide what to propose.
 
+## Notion state (read at start, write at end)
+
+See `references/notion_state.md` for the schema. For this phase:
+
+**Read at start:**
+- `Positions` DB — current open positions (so you don't double-add to AAPL if you already hold it)
+- `Observations` page — strategy-tuning patterns from prior days/weeks (look at the most recent week section)
+- `Handoffs` page, section `daily-recap → next-day post-amc` — overnight notes from yesterday's recap, if any. Clear that section after reading.
+
+**Write at end:**
+- `Positions` DB — for each new position you opened, upsert a row (Symbol, Opened By Phase=post-amc, Opened Date=today ET, Composite Score, Original Thesis, Target Price, Stop Plan, Ladder Rungs Filled=0 initially, Avg Entry Price from Alpaca, Last Touched By=post-amc, Last Touched At=now UTC)
+- `Daily Log` DB — append one row (Run Title=`YYYY-MM-DD post-amc`, Phase=post-amc, Status=ok|partial|error, Trades Proposed, Trades Approved, Trades Filled, Summary=Discord post text, Errors=any)
+- `Handoffs` page, section `post-amc → ah-close` — replace contents with ≤5 bullets for what ah-close should watch (e.g. "META guidance Q&A clip drops ~6:30 PM — re-read tone before deciding")
+
 ## Workflow
 
 1. Call `python ~/.claude/skills/earnings-trader/scripts/trade.py fetch-amc-context` → JSON of today's AMC reporters on the watchlist, with print numbers, current quote, recent headlines, and prior quarters' surprise history.

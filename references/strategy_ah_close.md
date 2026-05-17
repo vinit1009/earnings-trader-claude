@@ -6,6 +6,19 @@
 
 **This phase is the safety net** for the post-AMC routine. Without it, positions sit unmanaged from 8 PM ET to 9:30 AM the next morning.
 
+## Notion state (read at start, write at end)
+
+See `references/notion_state.md` for the schema. For this phase:
+
+**Read at start:**
+- `Positions` DB — every open position with its provenance. Critically: filter by `Opened By Phase = post-amc` AND `Opened Date = today (ET)` to identify positions you're responsible for tonight. Pre-existing carryovers are not your job — premarket handles those tomorrow.
+- `Handoffs` page, section `post-amc → ah-close` — notes from post-amc (e.g. "META guidance clip at 6:30 PM"). After reading, **clear this section**.
+
+**Write at end:**
+- `Positions` DB — for each position you touched: update Current P&L %, Last Touched By=ah-close, Last Touched At=now. If you flattened, **archive/delete the row**.
+- `Daily Log` DB — append one row (Run Title=`YYYY-MM-DD ah-close`, Phase=ah-close, Status, Trades Proposed=sell ladders posted, Trades Approved, Trades Filled, Summary=Discord post)
+- `Handoffs` page, section `ah-close → premarket` — replace with ≤5 bullets for what premarket should watch (e.g. "Held META through guidance Q&A — thesis still intact, watch for overnight downgrades")
+
 ## Workflow
 
 1. `python scripts/trade.py account-snapshot` → confirm current equity, P&L today, headroom.

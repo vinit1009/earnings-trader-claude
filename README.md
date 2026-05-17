@@ -2,16 +2,20 @@
 
 Personal earnings-trading copilot. Reads the day's earnings prints, asks Claude (the analyst) to score each, posts the best-signaled trades to Discord for ✅/❌ approval, then places laddered limit orders on Alpaca.
 
-**Architecture: Claude is the brain, `trade.py` is the body.** A scheduled Claude Code session (via Anthropic /schedule routine) opens at 4:01 PM ET on weekdays, reads the relevant strategy doc in `references/`, and calls `trade.py` CLI primitives to gather data, propose trades, and place orders. No separate LLM API key needed — Claude itself is the model.
+**Architecture: Claude is the brain, `trade.py` is the body, Notion is the shared memory, Discord is the approval surface.** Six scheduled Claude Code sessions (via Anthropic /schedule routines) fire at fixed times M–F; each reads its strategy doc from `references/`, reads/writes shared state in Notion via MCP, calls `trade.py` CLI primitives, and posts to Discord. No separate LLM API key needed — Claude itself is the model.
+
+**Repo visibility: PRIVATE.** Routines clone via a fine-grained GitHub PAT embedded in their session URL. No secrets are committed (see `.gitignore`).
 
 ## Status
 
-- ✅ Post-AMC strategy (4:01 PM ET)
-- ⬜ AMC brief (3:50 PM)
-- ⬜ Pre-market (7:00 AM)
-- ⬜ Open + drift (9:25 AM)
-- ⬜ AH close (7:55 PM)
-- ⬜ Daily recap (4:05 PM)
+- ✅ Post-AMC strategy doc (4:01 PM ET)
+- ✅ AMC brief doc (3:50 PM)
+- ✅ Pre-market doc (7:00 AM)
+- ✅ Open + drift doc (9:25 AM)
+- ✅ AH close doc (7:55 PM)
+- ✅ Daily recap doc (4:05 PM)
+- ✅ Notion cross-phase coordination layer (see `references/notion_state.md`)
+- ⬜ All 6 /schedule routines deployed
 
 ## Workflow (post-AMC)
 
@@ -99,10 +103,16 @@ FINNHUB_KEY=...
 DISCORD_TOKEN=...
 DISCORD_USER_ID=...        # only this user's reactions count
 DISCORD_CHANNEL_ID=...
+
+NOTION_PARENT_PAGE_ID=...
+NOTION_POSITIONS_DB_ID=...
+NOTION_DAILY_LOG_DB_ID=...
+NOTION_HANDOFFS_PAGE_ID=...
+NOTION_OBSERVATIONS_PAGE_ID=...
 ```
 
 For local dev, drop these in `.env.local` at the repo root.
-For cloud, they go in the /schedule routine's prompt (private to your Anthropic account).
+For cloud, they go in the /schedule routine's prompt (private to your Anthropic account). The routine also gets the Notion MCP connector attached so Claude can read/write the state pages.
 
 ## Local dev
 
@@ -133,7 +143,17 @@ A scheduled Anthropic routine clones this repo and runs Claude with a prompt lik
 
 ## Strategy docs
 
-- [Post-AMC reaction](references/strategy_post_amc.md) — 4:01 PM ET workflow
+- [AMC brief](references/strategy_amc_brief.md) — 3:50 PM ET informational
+- [Post-AMC reaction](references/strategy_post_amc.md) — 4:01 PM ET trading
+- [Daily recap](references/strategy_daily_recap.md) — 4:05 PM ET reporting
+- [AH close](references/strategy_ah_close.md) — 7:55 PM ET exits/hold decisions
+- [Pre-market](references/strategy_premarket.md) — 7:00 AM ET overnight review + BMO scan
+- [Open + drift](references/strategy_open_drift.md) — 9:25 AM ET opening-bell strategy
+- [Notion state reference](references/notion_state.md) — shared state schema for all phases
+
+## Notion setup (one-time)
+
+See [notion-schema/setup.md](notion-schema/setup.md) for the 15-minute setup: create parent page, two databases, two sub-pages, grant MCP access, capture IDs.
 
 ## What this is NOT
 

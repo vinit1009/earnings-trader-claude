@@ -8,6 +8,19 @@
 
 This is the last chance to set the entry/exit for the day before the regular session starts.
 
+## Notion state (read at start, write at end)
+
+See `references/notion_state.md` for the schema. For this phase:
+
+**Read at start:**
+- `Positions` DB — every open position with provenance. Each row gives you the original target and stop plan, so the gap-vs-implied math has a reference point.
+- `Handoffs` page, section `premarket → open-drift` — notes from premarket (e.g. "META hold through bell"). After reading, **clear this section**.
+
+**Write at end:**
+- `Positions` DB — update each position you touched (Current P&L %, Last Touched By=open-drift, Last Touched At=now, Notes if action taken). If you flattened, archive/delete the row. If you opened new positions (rare at this phase — usually it's about exits), create rows with Opened By Phase=open-drift.
+- `Daily Log` DB — append one row (Run Title=`YYYY-MM-DD open-drift`, Phase=open-drift, Status, Trades Proposed, Trades Approved, Trades Filled, Summary=Discord post)
+- `Handoffs` page, section `open-drift → daily-recap` — replace with ≤5 bullets for what daily-recap should highlight tonight (e.g. "META faded at open as expected — booked +6%" or "NVDA PEAD ride still active, holding into close")
+
 ## Workflow
 
 1. `python scripts/trade.py account-snapshot` → headroom check.

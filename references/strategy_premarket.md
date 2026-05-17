@@ -6,6 +6,20 @@
 1. **Overnight position review**: for positions held from yesterday, has the thesis flipped? News since 8 PM ET, analyst rating changes, futures direction, pre-market price action.
 2. **BMO scan**: companies that released earnings before market open (BMO) between 4 AM and 7 AM. Same composite-signal decision logic as post-amc, applied to morning reporters.
 
+## Notion state (read at start, write at end)
+
+See `references/notion_state.md` for the schema. For this phase:
+
+**Read at start:**
+- `Positions` DB — every open position with provenance. Each row tells you the original thesis, target, and stop plan from whoever opened it (post-amc / open-drift). Use this to decide "thesis flipped" vs "thesis intact" without re-deriving from Discord history.
+- `Handoffs` page, section `ah-close → premarket` — last night's notes from ah-close. After reading, **clear this section**.
+- `Observations` page — recent pattern notes (e.g. "small-cap BMO ladders fill <20%, widen bands").
+
+**Write at end:**
+- `Positions` DB — update each position (Current P&L %, Last Touched By=premarket, Last Touched At=now, Notes=any thesis-flip language). For BMO opens, create new rows (Opened By Phase=premarket, Opened Date=today).
+- `Daily Log` DB — append one row covering BOTH overnight review AND BMO scan (Run Title=`YYYY-MM-DD premarket`, Phase=premarket, Status, Trades Proposed, Trades Approved, Trades Filled, Summary=Discord post)
+- `Handoffs` page, section `premarket → open-drift` — replace with ≤5 bullets for what open-drift should know (e.g. "META gapped +2% pre-market, thesis intact, hold through bell" or "NVDA flattened pre-market on AMD miss read-across")
+
 ## Workflow
 
 ### Part A: Overnight position review (every fire)
