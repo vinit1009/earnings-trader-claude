@@ -1,0 +1,47 @@
+# Universe filter for the earnings trader.
+#
+# Replaces the old hand-picked ticker list. Now we consider the FULL US
+# earnings calendar each day and filter by liquidity / size / share class.
+
+filters:
+  # Liquidity / size — keep mid-cap and up, drop illiquid names
+  min_market_cap_usd: 2_000_000_000      # $2B floor — drops micro-caps
+  min_avg_volume: 1_000_000              # 1M shares/day floor — drops illiquid
+  min_price: 5.0                          # $5 floor — no penny stocks (extended-hours spreads explode below this)
+
+  # Listing
+  allowed_countries: ["US"]
+  allowed_exchanges:                      # uppercase; "" = allow any
+    - "NASDAQ NMS - GLOBAL MARKET"
+    - "NEW YORK STOCK EXCHANGE, INC."
+    - "NYSE ARCA"
+    - "NASDAQ GLOBAL SELECT"
+    - "NASDAQ CAPITAL MARKET"
+  common_stock_only: true                 # drops ETFs, ADRs (until we have a strategy for them)
+
+# Default ladder shape — applied to every ticker unless overridden below.
+defaults:
+  rungs: 10
+  down_band: 0.10
+  up_band: 0.05
+  weight_ratio: 5.0
+  default_position_usd: 400
+
+# Per-ticker overrides. Only the keys you set are overridden — others fall through to defaults.
+# High-vol earnings tend to move 8-15%, so widen the bands.
+overrides:
+  TSLA:
+    down_band: 0.15
+    up_band: 0.08
+  NVDA:
+    down_band: 0.12
+    up_band: 0.07
+  AMD:
+    down_band: 0.12
+    up_band: 0.07
+  META:
+    down_band: 0.10
+    up_band: 0.06
+  NFLX:
+    down_band: 0.12
+    up_band: 0.07

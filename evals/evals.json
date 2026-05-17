@@ -1,0 +1,48 @@
+{
+  "skill_id": "earnings-trader",
+  "version": "0.1.0",
+  "trigger_cases": [
+    {
+      "prompt": "Run the post-amc phase, NVDA just reported",
+      "expected": "trigger",
+      "rationale": "Direct phase invocation."
+    },
+    {
+      "prompt": "Build a laddered limit order for AAPL — buy 25 shares around $180",
+      "expected": "trigger",
+      "rationale": "Ladder order request, core feature."
+    },
+    {
+      "prompt": "What's on the earnings calendar tonight?",
+      "expected": "trigger",
+      "rationale": "Maps to amc-brief phase."
+    },
+    {
+      "prompt": "I want the bot to scan tomorrow's pre-market earnings reactions",
+      "expected": "trigger",
+      "rationale": "Maps to premarket phase."
+    },
+    {
+      "prompt": "Send the proposed trades to discord for me to approve",
+      "expected": "trigger",
+      "rationale": "Discord approval flow is core to this skill."
+    }
+  ],
+  "should_not_trigger_cases": [
+    {
+      "prompt": "Fix the typo in the README",
+      "expected": "skip",
+      "rationale": "Unrelated maintenance task."
+    },
+    {
+      "prompt": "Show me the stock chart for AAPL",
+      "expected": "skip",
+      "rationale": "Read-only chart request, not trading."
+    },
+    {
+      "prompt": "What time does the market open?",
+      "expected": "skip",
+      "rationale": "General market info, no trade intent."
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+[project]
+name = "earnings-trader"
+version = "0.1.0"
+description = "Personal earnings-trading copilot with laddered limit orders and Discord approval"
+requires-python = ">=3.11"
+dependencies = [
+    "alpaca-py>=0.30.0",
+    "discord.py>=2.3.0",
+    "finnhub-python>=2.4.0",
+    "pydantic>=2.5.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0",
+    "python-dateutil>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "freezegun>=1.4.0",
+]
+
+[project.scripts]
+earnings-trader = "scripts.trade:main"
+
+[tool.pytest.ini_options]
+testpaths = ["scripts"]
+python_files = ["test_*.py"]
