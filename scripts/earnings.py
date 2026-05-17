@@ -179,6 +179,55 @@ def _client() -> finnhub.Client:
     return finnhub.Client(api_key=key)
 
 
+@functools.lru_cache(maxsize=1)
+def _alpaca_data():
+    """Alpaca historical-bars client. Used because Finnhub free tier no longer
+    exposes /stock/candle (returns 403). Alpaca paper accounts include free
+    historical IEX bars."""
+    from alpaca.data.historical import StockHistoricalDataClient
+
+    key = os.environ.get("ALPACA_KEY_ID")
+    secret = os.environ.get("ALPACA_SECRET")
+    if not key or not secret:
+        raise RuntimeError("ALPACA_KEY_ID / ALPACA_SECRET not set in env")
+    return StockHistoricalDataClient(api_key=key, secret_key=secret)
+
+
+def get_daily_closes(symbol: str, days: int) -> list[float] | None:
+    """Return up to `days` most-recent daily closes for `symbol` (ascending date order).
+
+    Backed by Alpaca historical bars (Finnhub free tier blocks /stock/candle). The
+    paper account is on the IEX feed only — SIP queries 403 — so we pin the feed
+    explicitly. End date is `today - 1` to avoid the SIP-vs-IEX last-bar boundary.
+    Returns None on auth or API errors.
+    """
+    from alpaca.data.enums import DataFeed
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+
+    end_date = _dt.date.today() - _dt.timedelta(days=1)
+    start = end_date - _dt.timedelta(days=max(60, int(days * 1.6)))
+    try:
+        req = StockBarsRequest(
+            symbol_or_symbols=[symbol.upper()],
+            timeframe=TimeFrame.Day,
+            start=_dt.datetime.combine(start, _dt.time.min),
+            end=_dt.datetime.combine(end_date, _dt.time.max),
+            feed=DataFeed.IEX,
+        )
+        result = _alpaca_data().get_stock_bars(req)
+    except Exception as e:
+        log.info("Alpaca bars fetch failed for %s: %s", symbol, e)
+        return None
+    try:
+        bars = result[symbol.upper()]
+    except (KeyError, TypeError):
+        return None
+    if not bars:
+        return None
+    return [float(b.close) for b in bars]
+
+
 def get_upcoming_earnings(
     days: int = 7,
     watchlist: set[str] | None = None,
@@ -305,26 +354,11 @@ def get_realized_vol(symbol: str, days: int = 30) -> float | None:
     """Annualized realized volatility from daily log-returns over last `days` candles.
 
     Returns percent (e.g. 35.2 means 35.2% annualized vol). None on insufficient data.
-    Free Finnhub /stock/candle supports US daily candles for at least the last 12 months.
+    Backed by Alpaca historical bars.
     """
     import math
 
-    today = _dt.date.today()
-    start = today - _dt.timedelta(days=max(60, int(days * 1.6)))
-    try:
-        raw = _with_rate_limit(
-            _client().stock_candles,
-            symbol.upper(),
-            "D",
-            int(_dt.datetime.combine(start, _dt.time.min).timestamp()),
-            int(_dt.datetime.combine(today, _dt.time.max).timestamp()),
-        )
-    except FinnhubAPIException as e:
-        log.info("realized-vol fetch failed for %s: %s", symbol, e)
-        return None
-    if not raw or raw.get("s") != "ok":
-        return None
-    closes = raw.get("c") or []
+    closes = get_daily_closes(symbol, days + 10) or []
     if len(closes) < days + 1:
         return None
     closes = closes[-(days + 1):]
@@ -341,36 +375,19 @@ def get_realized_vol(symbol: str, days: int = 30) -> float | None:
 def get_market_regime() -> dict:
     """Classify the market regime from SPY trend + recent volatility.
 
-    We use SPY-only because Finnhub free tier doesn't cleanly expose ^VIX. SPY's own
-    1d/5d returns and distance from its 50DMA carry most of the same information —
-    when SPY breaks down, realized vol rises in correlation.
+    Uses Alpaca historical bars (Finnhub free tier blocks /stock/candle). SPY-only
+    classification — when SPY breaks down, realized vol rises in correlation,
+    making a separate VIX feed redundant for our coarse regime buckets.
 
     Returns:
         {regime, spy_price, spy_50dma, spy_pct_above_50dma, spy_1d_pct, spy_5d_pct, reason}
     """
-    today = _dt.date.today()
-    start = today - _dt.timedelta(days=110)
-    spy_quote = get_quote("SPY")
-    if not spy_quote:
-        return {"regime": "UNKNOWN", "reason": "no SPY quote"}
-    try:
-        raw = _with_rate_limit(
-            _client().stock_candles,
-            "SPY",
-            "D",
-            int(_dt.datetime.combine(start, _dt.time.min).timestamp()),
-            int(_dt.datetime.combine(today, _dt.time.max).timestamp()),
-        )
-    except FinnhubAPIException as e:
-        return {"regime": "UNKNOWN", "reason": f"SPY candle fetch failed: {e}"}
-    if not raw or raw.get("s") != "ok":
-        return {"regime": "UNKNOWN", "reason": "no SPY candle data"}
-    closes = raw.get("c") or []
+    closes = get_daily_closes("SPY", 70) or []
     if len(closes) < 50:
-        return {"regime": "UNKNOWN", "reason": f"only {len(closes)} SPY candles"}
+        return {"regime": "UNKNOWN", "reason": f"only {len(closes)} SPY candles from Alpaca"}
 
+    spy_price = closes[-1]
     spy_50dma = sum(closes[-50:]) / 50.0
-    spy_price = spy_quote.current
     spy_pct_above_50dma = (spy_price - spy_50dma) / spy_50dma * 100
     spy_1d_pct = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0.0
     spy_5d_pct = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 6 else 0.0
@@ -398,32 +415,37 @@ def get_market_regime() -> dict:
 def _post_print_abs_move_pct(symbol: str, print_date: _dt.date) -> float | None:
     """Absolute % move on the trading day after `print_date`.
 
-    Uses Finnhub /stock/candle (daily resolution). Free tier supports this for US stocks
-    but history is capped (~12 months back). Returns None if we can't determine the move.
+    Backed by Alpaca historical bars. Returns None if we can't determine the move
+    (no history for that ticker around that date, e.g. very recent IPO).
 
-    Approximation: compares `print_date`'s close to the next available close. For an AMC
-    print this is print_day → print_day+1. For a BMO print this is print_day-1 →
-    print_day (and the first window after print_date will already include both).
+    Compares the close at `print_date` (or the closest prior trading day) to the
+    next trading day's close. For an AMC print this captures the post-print move;
+    for a BMO print this captures the day-of-print move.
     """
+    from alpaca.data.enums import DataFeed
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+
     try:
-        end = print_date + _dt.timedelta(days=7)
-        raw = _with_rate_limit(
-            _client().stock_candles,
-            symbol.upper(),
-            "D",
-            int(_dt.datetime.combine(print_date - _dt.timedelta(days=2), _dt.time.min).timestamp()),
-            int(_dt.datetime.combine(end, _dt.time.max).timestamp()),
+        req = StockBarsRequest(
+            symbol_or_symbols=[symbol.upper()],
+            timeframe=TimeFrame.Day,
+            start=_dt.datetime.combine(print_date - _dt.timedelta(days=2), _dt.time.min),
+            end=_dt.datetime.combine(print_date + _dt.timedelta(days=7), _dt.time.max),
+            feed=DataFeed.IEX,
         )
-    except FinnhubAPIException as e:
-        log.info("candle fetch failed for %s @ %s: %s", symbol, print_date, e)
+        result = _alpaca_data().get_stock_bars(req)
+    except Exception as e:
+        log.info("Alpaca bars fetch failed for %s @ %s: %s", symbol, print_date, e)
         return None
-    if not raw or raw.get("s") != "ok":
+    try:
+        bars = result[symbol.upper()]
+    except (KeyError, TypeError):
         return None
-    closes = raw.get("c") or []
-    if len(closes) < 2:
+    if len(bars) < 2:
         return None
-    base = closes[0]
-    next_close = closes[1]
+    base = float(bars[0].close)
+    next_close = float(bars[1].close)
     if base == 0:
         return None
     return abs((next_close - base) / base) * 100
