@@ -29,6 +29,15 @@ See `references/notion_state.md` for the schema. For this phase:
 
 ## Workflow
 
+### Step 0: Stale-position sweep (run before anything else)
+
+Query Notion Positions DB via MCP for Symbol + Opened Date on every open row, then:
+```
+python scripts/trade.py force-flatten-stale \
+    --position AAPL:YYYY-MM-DD --position NVDA:YYYY-MM-DD ...
+```
+Any position held longer than 5 trading days is flagged stale. For each one, call `propose --side sell` before reviewing news or scanning BMO reporters.
+
 ### Part A: Overnight position review (every fire)
 
 1. `python scripts/trade.py review-positions --news-hours 14` → positions held + recent news (last 14 hours covers the 5 PM cut-off through this morning).
@@ -66,8 +75,23 @@ Equity: ${equity} (today P&L: ${pnl_today:+.2f})
 
 ### Position review
 
+`review-positions` now includes an `analyst_signals` block per position:
+```json
+"analyst_signals": {
+    "upgrades_since_open": [{"firm": "Goldman Sachs", "to_grade": "Buy", "date": "2026-05-19"}],
+    "downgrades_since_open": [],
+    "consensus": {"strong_buy": 22, "buy": 5, "hold": 3, "sell": 1, "strong_sell": 0, "period": "2026-05-01"}
+}
+```
+
+**Analyst upgrade/downgrade rules:**
+- **Fresh downgrade from GS/MS/JPM/BofA pre-market → flatten ahead of open.** These banks have floor traders who know where large blocks are sitting. A major bank downgrade the morning after earnings almost always means the stock underperforms at the open.
+- **Upgrade + positive AH thesis = hold.** Two or more upgrades overnight = PEAD ride is still in play; raise your sell target slightly.
+- **Same-sector downgrade (e.g., AMD downgraded when you hold NVDA) → tighten stop.** Sector sentiment moves in clusters.
+- **consensus.sell + consensus.strong_sell > consensus.buy + consensus.strong_buy → skip adding, consider flatten.** When the analyst community is net-bearish, there's no second wave of institutional demand to power PEAD.
+
+**General rules:**
 - **Trust news flow over technical bounces.** A bullish position with bad overnight news is a flatten regardless of how the pre-market chart looks.
-- **Analyst rating changes are leading indicators.** A downgrade from a major bank pre-market often telegraphs the open weakness.
 - **Don't average down on overnight losers.** That's not a strategy, it's a way to compound mistakes.
 - **Watch correlated names.** If you bought NVDA on earnings and AMD's BMO print today is a miss, the semi sector will gap. Flatten NVDA before the open if AMD bombs.
 

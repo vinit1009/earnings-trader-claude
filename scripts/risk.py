@@ -156,11 +156,8 @@ def check_orders(
             f"trading mode={mode!r} (P&L today ${account.pnl_today:.2f}); "
             f"new buys blocked. Rule: {mode_info['rule']}"
         )
-    if mode == "halt":
-        return RiskDecision.deny(
-            f"trading mode=halt (P&L today ${account.pnl_today:.2f}); "
-            f"no orders of any kind. Rule: {mode_info['rule']}"
-        )
+    # Sells (exits) are always allowed in any mode — you must be able to flatten
+    # positions regardless of daily loss. Blocking exits would compound losses.
 
     if current_price is not None and current_price > 0:
         for o in orders:

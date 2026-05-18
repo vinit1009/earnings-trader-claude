@@ -118,6 +118,20 @@ def _check_macro_events() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _vol_to_ladder_bands(vol: float | None) -> tuple[float, float]:
+    """Map realized vol to (down_band, up_band) ladder parameters.
+
+    Low-vol names react less to earnings noise; widen down_band only as necessary.
+    """
+    if vol is None or 20.0 <= vol < 45.0:
+        return (0.08, 0.02)  # default
+    if vol < 20.0:
+        return (0.05, 0.02)  # low-vol: tighter entry band
+    if vol < 70.0:
+        return (0.12, 0.03)  # elevated vol: wider entry band
+    return (0.15, 0.05)     # very high vol (PLTR, RIVN, MSTR)
+
+
 def _fetch_earnings_context(
     args,
     *,
@@ -126,9 +140,12 @@ def _fetch_earnings_context(
     news_hours: int,              # 0 = skip news fetch (preview); else hours of news to pull
 ) -> int:
     from earnings import (
+        compute_beat_consistency,
         compute_implied_move_proxy,
+        get_ah_volume_today,
         get_company_metrics,
         get_company_news,
+        get_pre_earnings_drift,
         get_quote,
         get_realized_vol,
         get_recent_earnings,
@@ -143,7 +160,7 @@ def _fetch_earnings_context(
             cfg = yaml.safe_load(f) or {}
     filters = cfg.get("filters") or {}
 
-    min_market_cap = float(filters.get("min_market_cap_usd", 2_000_000_000))
+    min_market_cap = float(filters.get("min_market_cap_usd", 1_000_000_000))
     min_avg_volume = float(filters.get("min_avg_volume", 1_000_000))
     min_price = float(filters.get("min_price", 5.0))
     allowed_countries = set(filters.get("allowed_countries") or [])
@@ -172,17 +189,33 @@ def _fetch_earnings_context(
         def _hour_match(e):
             return (window == "amc" and e.is_amc) or (window == "bmo" and e.is_bmo)
 
+        exclude_syms: set[str] = set()
+        if getattr(args, "exclude", None):
+            exclude_syms = {s.strip().upper() for s in args.exclude.split(",") if s.strip()}
+
         window_events = [
             e
             for e in all_events
             if _hour_match(e)
             and (not require_actuals or e.eps_actual is not None)
             and e.date == target_date.isoformat()
+            and e.symbol not in exclude_syms
         ]
         logging.info(
-            "fetch %s: %d reporters today before filtering (require_actuals=%s)",
-            window, len(window_events), require_actuals,
+            "fetch %s: %d reporters today before filtering (require_actuals=%s, excluded=%d)",
+            window, len(window_events), require_actuals, len(exclude_syms),
         )
+
+        # Compute pending: expected reporters that have no actuals yet and weren't excluded.
+        # Emitted in output so the caller can decide whether to poll again.
+        all_window = [
+            e for e in all_events
+            if _hour_match(e) and e.date == target_date.isoformat()
+        ]
+        pending_symbols = [
+            e.symbol for e in all_window
+            if e.eps_actual is None and e.symbol not in exclude_syms
+        ]
 
         events = []
         rejected = []
@@ -211,11 +244,16 @@ def _fetch_earnings_context(
                 m.current_price or 0,
             )
 
+    # In test mode (--symbol), pending is not meaningful.
+    if args.symbol:
+        pending_symbols = []
+
     if not events:
         _emit(
             {
                 "reporters": [],
                 "filtered_out": rejected,
+                "pending_symbols": pending_symbols,
                 "note": f"no {window.upper()} reporters passed filters today",
             }
         )
@@ -238,7 +276,10 @@ def _fetch_earnings_context(
         history = get_recent_earnings(e.symbol, quarters=4)
 
         implied_move_pct = compute_implied_move_proxy(e.symbol, history)
+        beat_consistency = compute_beat_consistency(history)
         realized_vol_30d = get_realized_vol(e.symbol, days=30)
+        pre_earnings_drift_5d = get_pre_earnings_drift(e.symbol)
+        ladder_down, ladder_up = _vol_to_ladder_bands(realized_vol_30d)
         current_move_pct = q.pct_change() if q else None
         if implied_move_pct and current_move_pct is not None and implied_move_pct > 0:
             ah_move_ratio = abs(current_move_pct) / implied_move_pct
@@ -278,6 +319,7 @@ def _fetch_earnings_context(
                     "eps_surprise_pct": e.eps_surprise_pct(),
                     "revenue_estimate": e.revenue_estimate,
                     "revenue_actual": e.revenue_actual,
+                    "revenue_surprise_pct": e.revenue_surprise_pct(),
                 },
                 "quote": (
                     None
@@ -308,6 +350,7 @@ def _fetch_earnings_context(
                     }
                     for h in history
                 ],
+                "beat_consistency": beat_consistency,
                 "implied_move": {
                     "proxy_pct": implied_move_pct,
                     "current_move_pct": current_move_pct,
@@ -315,13 +358,30 @@ def _fetch_earnings_context(
                     "classification": move_classification,
                 },
                 "realized_vol_30d_pct": realized_vol_30d,
+                "pre_earnings_5d_drift_pct": pre_earnings_drift_5d,
+                "ah_volume_today": get_ah_volume_today(e.symbol),
+                "suggested_ladder": {
+                    "down_band": ladder_down,
+                    "up_band": ladder_up,
+                },
             }
         )
+
+    # Sector crowding: flag industries with 2+ reporters tonight
+    import collections as _collections
+    _industry_map: dict[str, list[str]] = _collections.defaultdict(list)
+    for r in out:
+        ind = (r.get("metrics") or {}).get("industry") or "unknown"
+        _industry_map[ind].append(r["symbol"])
+    sector_crowding = {ind: syms for ind, syms in _industry_map.items() if len(syms) >= 2}
 
     _emit(
         {
             "reporters": out,
             "count": len(out),
+            "sector_crowding": sector_crowding,
+            "pending_symbols": pending_symbols,
+            "pending_count": len(pending_symbols),
             "filtered_out_count": len(rejected),
             "filters_applied": {
                 "min_market_cap_usd": min_market_cap,
@@ -362,12 +422,15 @@ def cmd_fetch_earnings_preview(args) -> int:
 
 
 def cmd_review_positions(args) -> int:
+    import datetime as _dt
     from broker import load_broker
-    from earnings import get_company_news, get_quote
+    from earnings import get_analyst_signals, get_company_news, get_quote
 
     broker = load_broker()
     positions = broker.list_positions()
     open_orders = broker.list_open_orders()
+
+    analyst_since = _dt.date.today() - _dt.timedelta(days=max(1, args.news_hours // 24))
 
     out = []
     for p in positions:
@@ -383,6 +446,7 @@ def cmd_review_positions(args) -> int:
             if args.news_hours > 0
             else []
         )
+        analyst = get_analyst_signals(sym, analyst_since)
         ords = [
             {
                 "order_id": o.order_id,
@@ -420,6 +484,7 @@ def cmd_review_positions(args) -> int:
                     }
                     for n in news[:15]
                 ],
+                "analyst_signals": analyst,
             }
         )
 
@@ -699,6 +764,61 @@ async def _propose_async(args) -> int:
             )
             return 0
 
+        # Re-fetch price after approval — guard against stale orders.
+        # The user may have taken 1–5 minutes to react; price can move materially.
+        if args.side == "buy" and current_price and current_price > 0:
+            fresh_quote = get_quote(args.symbol)
+            if fresh_quote:
+                drift_pct = (fresh_quote.current - current_price) / current_price * 100
+                implied_for_stale = getattr(args, "implied_move_pct", None) or 0.0
+
+                if drift_pct < -7.0:
+                    # Hard abort: price cratered since proposal — thesis may have broken
+                    msg = (
+                        f"⚠️ **{args.symbol}** approval received but price dropped "
+                        f"{drift_pct:+.1f}% since proposal "
+                        f"(${current_price:.2f} → ${fresh_quote.current:.2f}). "
+                        f"Orders NOT placed — re-run `propose` with fresh data."
+                    )
+                    await bot.post_message(msg)
+                    _emit(
+                        {
+                            "approved": True,
+                            "placed": False,
+                            "reason": f"stale_price: dropped {drift_pct:+.1f}%",
+                            "ladder_id": ladder_id,
+                        }
+                    )
+                    return 0
+
+                if drift_pct > 5.0 and implied_for_stale > 0:
+                    # Hard abort if stock surged past fade_candidate threshold
+                    new_ah_pct = abs(fresh_quote.pct_change())
+                    new_ratio = new_ah_pct / implied_for_stale
+                    if new_ratio > 1.5:
+                        msg = (
+                            f"⚠️ **{args.symbol}** is now a fade_candidate "
+                            f"(ratio {new_ratio:.2f}) after {drift_pct:+.1f}% surge "
+                            f"since proposal. Orders NOT placed."
+                        )
+                        await bot.post_message(msg)
+                        _emit(
+                            {
+                                "approved": True,
+                                "placed": False,
+                                "reason": f"stale_price: fade_candidate ratio={new_ratio:.2f}",
+                                "ladder_id": ladder_id,
+                            }
+                        )
+                        return 0
+
+                if abs(drift_pct) > 3.0:
+                    # Soft warn — moderate drift, proceed but flag it
+                    await bot.post_message(
+                        f"ℹ️ **{args.symbol}** drifted {drift_pct:+.1f}% since proposal "
+                        f"(${current_price:.2f} → ${fresh_quote.current:.2f}). Placing anyway."
+                    )
+
         try:
             placed = broker.place_ladder(orders)
         except BrokerError as e:
@@ -778,6 +898,55 @@ def cmd_fetch_press_release(args) -> int:
             "cik": release.cik,
             "accession_number": release.accession_number,
             "filing_date": release.filing_date,
+            "filed_today": release.filed_today,
+            "is_call_transcript": release.is_call_transcript,
+            "primary_doc_url": release.primary_doc_url,
+            "item_codes": release.item_codes,
+            "guidance_direction": release.guidance_direction,
+            "char_count": len(release.text),
+            "text": release.text,
+        }
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: fetch-call-transcript  (EDGAR 8-K Item 7.01 — conference call)
+# ---------------------------------------------------------------------------
+
+
+def cmd_fetch_call_transcript(args) -> int:
+    """Fetch the conference call transcript from EDGAR (8-K Item 7.01).
+
+    Many companies file their earnings call transcript as a Regulation FD disclosure
+    (Item 7.01) within 1-3 hours of the call ending. The ah-close routine can call this
+    before making the 25% staged entry decision.
+    """
+    from edgar import fetch_latest_earnings_8k
+
+    on_or_after = None
+    if args.since:
+        try:
+            on_or_after = _dt.date.fromisoformat(args.since)
+        except ValueError:
+            _emit({"error": f"invalid --since {args.since!r} (use YYYY-MM-DD)"})
+            return 1
+
+    release = fetch_latest_earnings_8k(
+        args.symbol, item_code="7.01", on_or_after=on_or_after, max_chars=args.max_chars
+    )
+    if release is None:
+        _emit({"found": False, "symbol": args.symbol.upper()})
+        return 0
+    _emit(
+        {
+            "found": True,
+            "symbol": release.symbol,
+            "cik": release.cik,
+            "accession_number": release.accession_number,
+            "filing_date": release.filing_date,
+            "filed_today": release.filed_today,
+            "is_call_transcript": release.is_call_transcript,
             "primary_doc_url": release.primary_doc_url,
             "item_codes": release.item_codes,
             "char_count": len(release.text),
@@ -895,6 +1064,139 @@ def cmd_rolling_stats(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: force-flatten-stale
+# Flatten any position held longer than max_age_days trading days.
+# PEAD effect decays after ~5 sessions; anything older is an unplanned directional bet.
+# ---------------------------------------------------------------------------
+
+
+def _trading_days_between(start: _dt.date, end: _dt.date) -> int:
+    """Count Mon–Fri days between start (exclusive) and end (inclusive).
+
+    Does not subtract US holidays (close enough for our stale-age check — a
+    holiday-heavy week would over-count by at most 1–2 days, which errs on the
+    side of holding slightly longer, not cutting too early).
+    """
+    count = 0
+    d = start + _dt.timedelta(days=1)
+    while d <= end:
+        if d.weekday() < 5:  # Mon=0 … Fri=4
+            count += 1
+        d += _dt.timedelta(days=1)
+    return count
+
+
+def cmd_force_flatten_stale(args) -> int:
+    """Check each open Alpaca position against Notion 'Opened Date' passed via --position.
+
+    The calling Claude agent queries the Notion Positions DB via MCP, then passes
+    each held symbol and its opened date as `--position SYMBOL:YYYY-MM-DD` args.
+    Any position held longer than --max-age-days trading days is flagged as stale.
+
+    The command emits a JSON list of stale positions.  The agent loop then calls
+    `propose --side sell` for each flagged symbol.
+
+    Example:
+        python scripts/trade.py force-flatten-stale \\
+            --position AAPL:2026-05-10 \\
+            --position NVDA:2026-05-09 \\
+            --max-age-days 5
+    """
+    from broker import load_broker
+
+    broker = load_broker()
+    positions = broker.list_positions()
+    today = _dt.date.today()
+
+    # Parse --position SYMBOL:YYYY-MM-DD pairs supplied by the calling agent
+    notion_opened: dict[str, str] = {}
+    for entry in (args.position or []):
+        if ":" not in entry:
+            logging.warning("force-flatten-stale: skipping bad --position %r (expected SYMBOL:YYYY-MM-DD)", entry)
+            continue
+        sym, date_str = entry.split(":", 1)
+        notion_opened[sym.upper()] = date_str.strip()
+
+    if not positions:
+        _emit({"stale_positions": [], "note": "no open positions"})
+        return 0
+
+    if not notion_opened:
+        _emit(
+            {
+                "stale_positions": [],
+                "skipped_no_date": [p.symbol.upper() for p in positions],
+                "note": (
+                    "No --position args supplied. Pass opened dates from the Notion Positions DB: "
+                    "--position SYMBOL:YYYY-MM-DD for each held position."
+                ),
+            }
+        )
+        return 0
+
+    stale = []
+    skipped_no_date = []
+
+    for pos in positions:
+        sym = pos.symbol.upper()
+        opened_iso = notion_opened.get(sym)
+        if not opened_iso:
+            skipped_no_date.append(sym)
+            continue
+        try:
+            opened_date = _dt.date.fromisoformat(opened_iso)
+        except ValueError:
+            logging.warning("force-flatten-stale: bad date %r for %s", opened_iso, sym)
+            skipped_no_date.append(sym)
+            continue
+        age_days = _trading_days_between(opened_date, today)
+        if age_days > args.max_age_days:
+            stale.append(
+                {
+                    "symbol": sym,
+                    "opened_date": opened_iso,
+                    "age_trading_days": age_days,
+                    "qty": pos.qty,
+                    "avg_entry_price": pos.avg_entry_price,
+                    "market_value": pos.market_value,
+                    "unrealized_pl": pos.unrealized_pl,
+                }
+            )
+
+    if skipped_no_date:
+        logging.warning(
+            "force-flatten-stale: no Notion Opened Date supplied for %s — skipping staleness check.",
+            skipped_no_date,
+        )
+
+    if not stale:
+        _emit(
+            {
+                "stale_positions": [],
+                "skipped_no_date": skipped_no_date,
+                "note": f"no positions older than {args.max_age_days} trading days",
+            }
+        )
+        return 0
+
+    # Emit so the calling agent can propose sell ladders for each stale position.
+    _emit(
+        {
+            "stale_positions": stale,
+            "skipped_no_date": skipped_no_date,
+            "max_age_days": args.max_age_days,
+            "action_required": (
+                "For each symbol below, call: propose --side sell --symbol X "
+                "--target <current_price> --shares <qty> --rationale 'stale: held N days'"
+                if not args.dry_run
+                else "dry_run=true — no action taken"
+            ),
+        }
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: place-stop  (hard-stop enforcement, called by ah-close/premarket/open-drift)
 # ---------------------------------------------------------------------------
 
@@ -995,6 +1297,12 @@ def main(argv: list[str] | None = None) -> int:
         "--for-date",
         help="Test mode: use earnings calendar from a specific YYYY-MM-DD (default: today).",
     )
+    p_fetch.add_argument(
+        "--exclude",
+        default="",
+        metavar="SYM1,SYM2",
+        help="Comma-separated symbols to skip. Used in polling loops to avoid re-processing already-handled reporters.",
+    )
     p_fetch.set_defaults(fn=cmd_fetch_amc_context)
 
     p_fetch_bmo = sub.add_parser(
@@ -1003,6 +1311,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_fetch_bmo.add_argument("--symbol", action="append")
     p_fetch_bmo.add_argument("--for-date")
+    p_fetch_bmo.add_argument(
+        "--exclude",
+        default="",
+        metavar="SYM1,SYM2",
+        help="Comma-separated symbols to skip (already processed in a prior poll cycle).",
+    )
     p_fetch_bmo.set_defaults(fn=cmd_fetch_bmo_context)
 
     p_prev = sub.add_parser(
@@ -1067,8 +1381,8 @@ def main(argv: list[str] | None = None) -> int:
     p_prop.add_argument(
         "--timeout-s",
         type=int,
-        default=90,
-        help="Seconds to wait for Discord approval reaction",
+        default=300,
+        help="Seconds to wait for Discord approval reaction (default 300 = 5 min; use 60 for sell ladders where speed matters)",
     )
     p_prop.add_argument(
         "--dry-run",
@@ -1084,7 +1398,7 @@ def main(argv: list[str] | None = None) -> int:
         "--implied-move-pct",
         type=float,
         default=0.0,
-        help="Historical implied-move proxy for this ticker (used to size the hard stop). 0 = use 5% floor.",
+        help="Historical implied-move proxy for this ticker (used to size the hard stop). 0 = use 5-pct floor.",
     )
     p_prop.set_defaults(fn=cmd_propose)
 
@@ -1099,6 +1413,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_press.add_argument("--max-chars", type=int, default=15000)
     p_press.set_defaults(fn=cmd_fetch_press_release)
+
+    p_transcript = sub.add_parser(
+        "fetch-call-transcript",
+        help="Fetch the earnings call transcript from EDGAR (8-K Item 7.01, Regulation FD)",
+    )
+    p_transcript.add_argument("--symbol", required=True)
+    p_transcript.add_argument(
+        "--since",
+        help="Only return filings on/after this date (YYYY-MM-DD). Default: 2 days ago.",
+    )
+    p_transcript.add_argument("--max-chars", type=int, default=15000)
+    p_transcript.set_defaults(fn=cmd_fetch_call_transcript)
 
     p_stats = sub.add_parser(
         "rolling-stats",
@@ -1117,6 +1443,29 @@ def main(argv: list[str] | None = None) -> int:
     p_stop.add_argument("--qty", type=float, help="Shares (default: full position)")
     p_stop.add_argument("--extended-hours", action="store_true")
     p_stop.set_defaults(fn=cmd_place_stop)
+
+    p_stale = sub.add_parser(
+        "force-flatten-stale",
+        help="Flag positions held longer than max-age-days trading days. Pass opened dates from Notion via --position SYMBOL:YYYY-MM-DD.",
+    )
+    p_stale.add_argument(
+        "--position",
+        action="append",
+        metavar="SYMBOL:YYYY-MM-DD",
+        help="Opened date for a held position. Repeat for each symbol. Example: --position AAPL:2026-05-10",
+    )
+    p_stale.add_argument(
+        "--max-age-days",
+        type=int,
+        default=5,
+        help="Trading days before a position is considered stale (default 5)",
+    )
+    p_stale.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List stale positions without emitting sell action",
+    )
+    p_stale.set_defaults(fn=cmd_force_flatten_stale)
 
     p_cancel = sub.add_parser("cancel", help="Cancel one open order")
     p_cancel.add_argument("--order-id", required=True)

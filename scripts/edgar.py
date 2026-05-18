@@ -73,6 +73,51 @@ def get_cik(symbol: str) -> str | None:
     return _ticker_to_cik.get(symbol.upper())
 
 
+def _classify_guidance_direction(text: str) -> str:
+    """Classify forward guidance direction from press release text.
+
+    Returns: "raised" | "maintained" | "lowered" | "withdrawn" | "mixed" | "unknown"
+    """
+    t = text.lower()
+
+    raised_signals = [
+        "raised guidance", "raised its guidance", "raised full-year", "raised fiscal",
+        "raised its outlook", "raised outlook", "increased guidance", "increased its guidance",
+        "increased full-year", "increased outlook", "raised its full-year",
+        "raises guidance", "raises outlook", "increases guidance",
+    ]
+    lowered_signals = [
+        "lowered guidance", "lowered its guidance", "lowered outlook", "lowered its outlook",
+        "reduced guidance", "cut guidance", "withdrew guidance", "withdraws guidance",
+        "suspended guidance", "suspends guidance", "below prior guidance",
+        "below previous guidance", "lowering guidance", "reducing guidance",
+        "lowered its full-year", "lowered full-year",
+    ]
+    maintained_signals = [
+        "reaffirmed guidance", "reaffirms guidance", "maintained guidance",
+        "maintains guidance", "affirmed outlook", "affirms outlook",
+        "reiterated guidance", "reiterates guidance", "in line with prior guidance",
+        "in line with previous guidance",
+    ]
+
+    has_raised = any(s in t for s in raised_signals)
+    has_lowered = any(s in t for s in lowered_signals)
+    has_maintained = any(s in t for s in maintained_signals)
+
+    # "withdrew" is always a hard signal regardless of other signals
+    if any(s in t for s in ("withdrew guidance", "withdraws guidance", "suspended guidance", "suspends guidance")):
+        return "withdrawn"
+    if has_raised and has_lowered:
+        return "mixed"
+    if has_lowered:
+        return "lowered"
+    if has_raised:
+        return "raised"
+    if has_maintained:
+        return "maintained"
+    return "unknown"
+
+
 @dataclass(frozen=True)
 class EarningsRelease:
     symbol: str
@@ -82,6 +127,9 @@ class EarningsRelease:
     primary_doc_url: str
     text: str                  # cleaned HTML-stripped text
     item_codes: list[str]      # e.g. ['2.02', '9.01']
+    guidance_direction: str    # "raised" | "maintained" | "lowered" | "withdrawn" | "mixed" | "unknown"
+    filed_today: bool          # True if 8-K was filed on today's date (late filer = staged entry may not apply)
+    is_call_transcript: bool   # True when fetched via item_code="7.01" (conference call transcript)
 
 
 def _find_press_release_exhibit(
@@ -148,6 +196,7 @@ def _strip_html(html: str) -> str:
 def fetch_latest_earnings_8k(
     symbol: str,
     *,
+    item_code: str = "2.02",
     on_or_after: _dt.date | None = None,
     max_chars: int = 15000,
 ) -> EarningsRelease | None:
@@ -186,7 +235,7 @@ def fetch_latest_earnings_8k(
             continue
         items_raw = items_list[i] if i < len(items_list) else ""
         item_codes = [x.strip() for x in re.split(r"[,;\s]+", items_raw) if x.strip()]
-        if not any("2.02" in c for c in item_codes):
+        if not any(item_code in c for c in item_codes):
             continue
         try:
             filing_date = _dt.date.fromisoformat(dates[i])
@@ -223,6 +272,9 @@ def fetch_latest_earnings_8k(
             primary_doc_url=doc_url,
             text=text,
             item_codes=item_codes,
+            guidance_direction=_classify_guidance_direction(text),
+            filed_today=(dates[i] == _dt.date.today().isoformat()),
+            is_call_transcript=(item_code == "7.01"),
         )
 
     return None

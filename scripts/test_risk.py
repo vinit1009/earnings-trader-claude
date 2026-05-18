@@ -135,3 +135,76 @@ def test_caps_match_plan():
     assert MAX_PER_POSITION_USD == 500.0
     assert MAX_CONCURRENT_POSITIONS == 3
     assert MAX_DAILY_LOSS_USD == 200.0
+
+
+def test_sector_cap_blocks_second_position_in_same_industry():
+    """Two tickers in the same Finnhub industry should be blocked."""
+    orders = build_ladder(
+        symbol="AMD", side="buy", target_price=10.0, total_shares=10, rungs=5
+    )
+    account = flat_account(open_positions={"NVDA": 200.0})
+    industries = {"NVDA": "Semiconductors", "AMD": "Semiconductors"}
+    decision = check_orders(orders, account, current_price=10.0, industries=industries)
+    assert not decision.allowed
+    assert "sector" in decision.reason.lower()
+
+
+def test_sector_cap_allow_different_industries():
+    """Different industries are not blocked by the sector cap."""
+    orders = build_ladder(
+        symbol="AAPL", side="buy", target_price=10.0, total_shares=10, rungs=5
+    )
+    account = flat_account(open_positions={"NVDA": 200.0})
+    industries = {"NVDA": "Semiconductors", "AAPL": "Technology"}
+    decision = check_orders(orders, account, current_price=10.0, industries=industries)
+    assert decision.allowed, decision.reason
+
+
+def test_sector_cap_override_flag():
+    """--allow-sector-double bypasses the sector cap."""
+    orders = build_ladder(
+        symbol="AMD", side="buy", target_price=10.0, total_shares=10, rungs=5
+    )
+    account = flat_account(open_positions={"NVDA": 200.0})
+    industries = {"NVDA": "Semiconductors", "AMD": "Semiconductors"}
+    decision = check_orders(
+        orders, account, current_price=10.0, industries=industries, allow_sector_double=True
+    )
+    assert decision.allowed, decision.reason
+
+
+def test_trading_modes_progression():
+    """get_trading_mode returns the right mode at each P&L threshold."""
+    from risk import get_trading_mode
+    assert get_trading_mode(0.0)["mode"] == "normal"
+    assert get_trading_mode(-50.0)["mode"] == "normal"
+    assert get_trading_mode(-100.0)["mode"] == "cautious"
+    assert get_trading_mode(-130.0)["mode"] == "cautious"
+    assert get_trading_mode(-150.0)["mode"] == "defensive"
+    assert get_trading_mode(-165.0)["mode"] == "defensive"
+    assert get_trading_mode(-180.0)["mode"] == "exit_only"
+    assert get_trading_mode(-195.0)["mode"] == "exit_only"
+    assert get_trading_mode(-200.0)["mode"] == "halt"
+    assert get_trading_mode(-999.0)["mode"] == "halt"
+
+
+def test_halt_mode_still_blocks_buys():
+    """In halt mode, buy orders must be rejected."""
+    orders = build_ladder(
+        symbol="AAPL", side="buy", target_price=10.0, total_shares=5, rungs=3
+    )
+    account = flat_account(pnl_today=-250.0)
+    decision = check_orders(orders, account, current_price=10.0)
+    assert not decision.allowed
+    assert "halt" in decision.reason.lower()
+
+
+def test_defensive_mode_blocks_buys_but_not_sells():
+    """In defensive mode, sells (exits) are still allowed."""
+    orders_sell = build_ladder(
+        symbol="AAPL", side="sell", target_price=10.0, total_shares=5, rungs=3,
+        down_band=0.05, up_band=0.10,
+    )
+    account = flat_account(open_positions={"AAPL": 200.0}, pnl_today=-155.0)
+    decision = check_orders(orders_sell, account, current_price=10.0)
+    assert decision.allowed, decision.reason

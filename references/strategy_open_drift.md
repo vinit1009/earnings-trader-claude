@@ -34,6 +34,7 @@ See `references/notion_state.md` for the schema. For this phase:
 
 ## Workflow
 
+0. Query Notion Positions DB via MCP for Symbol + Opened Date. Then: `python scripts/trade.py force-flatten-stale --position AAPL:YYYY-MM-DD ...` → stale sweep before managing today's positions.
 1. `python scripts/trade.py account-snapshot` → headroom check.
 2. `python scripts/trade.py review-positions --news-hours 2` → freshest pre-market state per position.
 3. `python scripts/trade.py list-orders` → any pre-market orders from premarket phase that haven't filled? Decide cancel-and-re-issue.
@@ -50,9 +51,9 @@ See `references/notion_state.md` for the schema. For this phase:
 | Flat | — | Convert to GTC limit ladders for both sides around target. Let the regular session decide. |
 
 5. For each decision, propose via the CLI. Order types vary:
-   - **Tight limit ladders** for take-partial / fade decisions: use `--side sell --extended-hours --down-band 0.02 --up-band 0.03 --rungs 5`.
-   - **MOO (market-on-open)** for flatten-at-open: not directly supported by our ladder; use a single-rung limit at current pre-market price - 0.5% (`--rungs 1`).
-   - **GTC ladders** for "set targets and let it ride": `--tif gtc --extended-hours false --down-band 0.05 --up-band 0.10`.
+   - **Tight limit ladders** for take-partial / fade decisions: use `--side sell --extended-hours --down-band 0.02 --up-band 0.03 --rungs 5 --timeout-s 60`. Use 60s timeout for sells — this phase is time-sensitive (5 min before open).
+   - **MOO (market-on-open)** for flatten-at-open: not directly supported by our ladder; use a single-rung limit at current pre-market price - 0.5% (`--rungs 1 --timeout-s 60`).
+   - **GTC ladders** for "set targets and let it ride": `--tif gtc --extended-hours false --down-band 0.05 --up-band 0.10`. These are not time-sensitive; default 300s timeout is fine.
 
 6. For BMO reporters proposed in `premarket` phase but not yet entered: re-check thesis if pre-market price moved a lot in the meantime. Cancel and re-propose at fresh target if so.
 

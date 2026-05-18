@@ -31,6 +31,7 @@ See `references/notion_state.md` for the schema. For this phase:
 
 ## Workflow
 
+0. Query Notion Positions DB via MCP for Symbol + Opened Date. Then: `python scripts/trade.py force-flatten-stale --position AAPL:YYYY-MM-DD ...` → flatten any position older than 5 trading days before the main decision loop.
 1. `python scripts/trade.py account-snapshot` → confirm current equity, P&L today, headroom.
 2. `python scripts/trade.py review-positions --news-hours 4` → JSON of every open position with current AH price, P&L since entry, recent news headlines (last 4 hours of post-print coverage).
 3. `python scripts/trade.py list-orders` → confirm no orphaned open buy orders. Cancel any that didn't fill (the prints are stale by now).
@@ -52,13 +53,15 @@ See `references/notion_state.md` for the schema. For this phase:
        --target P --shares N \
        --rationale "..." \
        --extended-hours --phase ah-close \
-       --down-band 0.03 --up-band 0.05 --rungs 5
+       --down-band 0.03 --up-band 0.05 --rungs 5 \
+       --timeout-s 60
    ```
 
    Notes:
    - **Sell ladders are tighter than buy ladders** (0.03 / 0.05 bands vs 0.10 / 0.05) — you want fills, not perfection on the exit.
    - **Fewer rungs** (5) — AH liquidity is thin, large ladders mostly don't fill.
-   - **Discord approval still required.** Same flow.
+   - **Discord approval still required.** Use `--timeout-s 60` (not the 300s buy default) — sell decisions need a fast response, and a 5-min timeout on a sell ladder at 7:55 PM leaves you exposed.
+   - **Stale-price guard applies to sells too.** If the price moves >7% between the proposal and your tap, the order will not be placed and you'll need to re-run.
 
 6. Cancel any remaining unfilled buy orders from the post-AMC session:
 
