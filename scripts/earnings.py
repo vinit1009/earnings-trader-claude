@@ -663,7 +663,7 @@ def get_ah_volume_today(symbol: str) -> float | None:
 def compute_beat_consistency(prior_quarters: list[EarningsEvent]) -> dict:
     """Aggregate EPS surprise history to detect consistent beaters and sandbaggers.
 
-    sandbagging_flag=True means the company routinely beats by >8% — the market expects
+    sandbagging_flag=True means the company routinely beats by >20% — the market expects
     it and the composite EPS beat signal should be discounted by 1 point.
     beat_rate_4q=1.0 AND NOT sandbagging_flag means a reliable non-sandbagging beater
     worth a +0.5 composite bonus.
@@ -681,7 +681,7 @@ def compute_beat_consistency(prior_quarters: list[EarningsEvent]) -> dict:
     return {
         "beat_rate_4q": round(beat_rate, 2),
         "avg_eps_surprise_4q": round(avg_surprise, 2),
-        "sandbagging_flag": avg_surprise > 8.0,
+        "sandbagging_flag": avg_surprise > 20.0,
     }
 
 

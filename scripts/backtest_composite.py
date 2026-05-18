@@ -90,9 +90,9 @@ def graduated_eps_points(surprise_pct: float | None) -> int:
 
 
 def map_to_tier(composite: float) -> str:
-    if composite >= 8.0:
+    if composite >= 5.5:
         return "S"
-    if composite >= 6.0:
+    if composite >= 4.0:
         return "A"
     if composite >= 3.0:
         return "C"
