@@ -24,6 +24,9 @@ dev = [
 [project.scripts]
 earnings-trader = "scripts.trade:main"
 
+[tool.setuptools]
+packages = ["scripts"]
+
 [tool.pytest.ini_options]
 testpaths = ["scripts"]
 python_files = ["test_*.py"]
