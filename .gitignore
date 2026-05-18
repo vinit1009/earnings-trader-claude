@@ -9,3 +9,4 @@ state.db-journal
 logs/
 .venv/
 .DS_Store
+*.egg-info/
