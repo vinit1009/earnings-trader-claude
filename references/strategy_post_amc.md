@@ -49,6 +49,7 @@ When reading `text`, look for:
 - **Tone shifts**: a CEO who normally talks about "headwinds" but doesn't this quarter is signaling confidence.
 - **"Non-GAAP" framing**: heavy non-GAAP adjustments can mask weakness.
 - **Guidance range width**: even if `guidance_direction: "raised"`, a very wide range ("$4.80–$5.30") signals uncertainty vs a tight one ("$5.10–$5.15").
+- **SaaS/subscription metrics**: for software names (CRM, SNOW, PANW, GTLB), ARR, RPO (remaining performance obligations), or billings guidance matters more than EPS guidance. A raised EPS with flat or declining ARR growth is bearish — the EPS beat may be from cost cuts, not demand acceleration. The EDGAR classifier captures guidance direction but is keyed to EPS/revenue language, not ARR/RPO. Read the `text` for these metrics explicitly.
 
 If the press release contradicts the headlines (e.g., headlines say "raised guidance" but the actual release lowers FY range), trust the release. Lower composite by 2 points.
 
@@ -67,6 +68,7 @@ These are **non-negotiable**. If any of these are true, skip the ticker and do n
 - **Same industry/sector already held** — `propose` blocks any new ticker whose `finnhub_industry` matches an open position. Three semis is one bet with 3× size. The override `--allow-sector-double` exists for rare cases (e.g., the second name is a hedge), use sparingly.
 - **Today's realized P&L is at or below -$200** (daily loss cap — `propose` will block buys, no exits to manage)
 - **Implied-move classification is `fade_candidate_skip`** — tape has overreacted past 1.5× the historical earnings move. We can't short, so we skip.
+- **`secondary_offering_detected: true`** in `fetch-press-release` output — a concurrent dilutive offering (secondary, follow-on, ATM) typically drops the stock 8-12% regardless of earnings quality. Hard skip regardless of composite.
 
 ## Decision rules — trading mode gate (NEW, check before macro-event)
 
@@ -165,6 +167,7 @@ Other bullish signals (+1 each):
 - `beat_consistency.sandbagging_flag: false AND beat_rate_4q == 1.0` — proven reliable beater (add +0.5, round up to next integer if ≥ X.5)
 - CEO/CFO language in headlines/quotes is confident: concrete numbers, raised outlook, references to specific growth drivers
 - The current after-hours tape is positive (`quote.pct_change > 0`) AND headlines align AND (`ah_volume_today` is null OR `ah_volume_today` > 200,000 for large/mega-cap, > 50,000 for mid-cap) — thin-volume AH moves are often algo-driven and frequently reverse at open; if volume is suspiciously low, do not count the tape as a bullish point
+- `metrics.short_ratio > 5` (days-to-cover) AND the print is a genuine beat — high short interest amplifies PEAD via short-squeeze pressure; add +1 to composite. `short_ratio` is in the `fetch-amc-context` metrics block; treat null as no adjustment.
 
 **Bearish points (-1 each):**
 
@@ -242,7 +245,7 @@ This adjustment stacks with the realized-vol modifier. Apply vol modifier first,
 
 **Mega-cap sizing reality check (backtest finding):** Over 4 quarters, mega-caps ($50B+: NVDA, META, MSFT, AAPL, GOOGL, AMZN) average only 1.3% 1-day moves even on strong beats. Mid-caps (PLTR, SNOW, PANW, AMD) average 3.5%+. If a mega-cap composite is A tier, consider sizing it as C ($150) — the expected dollar move is thin relative to the bid/ask cost. Prefer mid-cap A/S setups when available on the same night.
 
-**EPS surprise % unreliability:** For companies with near-zero or recently negative EPS bases (INTC, UBER), the surprise % can be astronomically large (100%–2000%) due to a tiny denominator. Cap composite EPS points at +3 regardless of surprise %, and note manually in the rationale if the surprise % looks like a base-effect artifact. The sandbagging flag (avg_eps_surprise_4q > 8%) will also misfire for these names — override manually.
+**EPS surprise % unreliability:** For companies with near-zero or recently negative EPS bases (INTC, UBER), the surprise % can be astronomically large (100%–2000%) due to a tiny denominator. Cap composite EPS points at +3 regardless of surprise %, and note manually in the rationale if the surprise % looks like a base-effect artifact. The sandbagging flag (avg_eps_surprise_4q > 20%) is calibrated to catch deliberate low-ballers (NVDA, MSFT, META) while avoiding misfires on legitimate high-growth names — but still override manually for obvious base-effect artifacts.
 
 ### Hard stop (NEW — set on every entry)
 
@@ -314,7 +317,7 @@ For the 25% staged entry decision, `ah-close` should run:
 ```
 python scripts/trade.py fetch-call-transcript --symbol X --since TODAY
 ```
-If `found: true`, read the transcript text for Q&A tone before committing the 25%. If `found: false`, proceed based on news headlines and price action as before.
+If `found: true`, read the transcript text for Q&A tone before committing the 25%. **Most companies return `found: false`** — EDGAR Item 7.01 (Reg FD) transcripts are rare; most companies rely on third-party services (Seeking Alpha, MotleyFool) that aren't accessible from the cloud routine. When `found: false`, proceed based on: (1) news headlines covering the Q&A, (2) AH price action direction since 4:30 PM, and (3) the original press release thesis.
 
 **Why not wait for the full call?** The best AH entries happen in the first 30–60 minutes after the print. Waiting for the entire Q&A means entering at a less favorable price on a confirmed winner, or missing it entirely on a fast mover.
 
@@ -335,4 +338,6 @@ If `found: true`, read the transcript text for Q&A tone before committing the 25
 
 ## When to skip the whole phase
 
-If `fetch-amc-context` returns zero reporters, exit cleanly. Zero is fine — it means no US company reporting after-market today passed the liquidity/size filter. Don't try to relax the filter on the fly to find trades; the filter exists to keep us out of illiquid AH names. A quiet day is a quiet day.
+If `fetch-amc-context` returns zero reporters **AND `pending_count` is also 0**, exit cleanly. Zero is fine — it means no US company reporting after-market today passed the liquidity/size filter. Don't try to relax the filter on the fly to find trades; the filter exists to keep us out of illiquid AH names. A quiet day is a quiet day.
+
+**IMPORTANT — "zero reporters" ≠ "zero actuals":** If `reporters` is empty but `pending_count > 0`, those companies simply haven't published yet (Finnhub lags 5–30 minutes after the actual press release). **Do NOT exit. Keep polling every 20 minutes until `pending_count == 0` or the 18:30 ET deadline.** Exiting when pending_count > 0 means missing CAVA/TOL/KEYS-style trades that report 4:00–5:30 PM.

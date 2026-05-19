@@ -6,15 +6,32 @@
 
 **This phase is the safety net** for the post-AMC routine. Without it, positions sit unmanaged from 8 PM ET to 9:30 AM the next morning.
 
-## Hard-stop enforcement (NEW — run FIRST every cycle)
+## Hard-stop and trailing-stop enforcement (run FIRST every cycle)
 
 Before the position-by-position decision loop:
-1. For every position opened today by post-amc, read its `Hard Stop Price` from the Notion Positions row.
-2. Get the current quote for each symbol.
-3. If `current_price < hard_stop_price`: immediately call `python scripts/trade.py place-stop --symbol X --stop-price <hard_stop_price>` to enforce the stop via Alpaca (if not already placed). This converts to a market sell if it crosses again, so we won't bleed further.
-4. Alternatively (preferred when AH is liquid): submit a tight sell ladder near current price via `propose --side sell --extended-hours --phase ah-close`.
+1. For every position opened today by post-amc, read its `Hard Stop Price` and `Implied Move Pct` from the Notion Positions row.
+2. `python scripts/trade.py review-positions` → get `pct_vs_entry` and current price for each.
+3. **Hard stop (downside):** If `current_price < hard_stop_price`, enforce it immediately:
+   ```
+   python scripts/trade.py place-stop --symbol X --stop-price <hard_stop_price>
+   ```
+   Alternatively (preferred when AH is liquid): submit a tight sell ladder near current price via `propose --side sell --extended-hours --phase ah-close`.
+4. **Trailing stop (upside protection):** If the position has run up significantly, raise the stop to lock in gains:
 
-Skip the rest of the decision tree for any position the stop already flattened.
+   | `pct_vs_entry` gain | New stop price |
+   |---|---|
+   | < +implied_move (normal) | Keep original hard stop |
+   | +1.5× implied_move to +2× | Raise stop to `entry + 1%` (break-even + buffer) |
+   | > +2× implied_move | Raise stop to `entry + 3%` (lock in partial gain) |
+
+   To update the stop, cancel the existing Alpaca stop order (if placed) and re-issue:
+   ```
+   python scripts/trade.py cancel --order-id <stop_order_id>
+   python scripts/trade.py place-stop --symbol X --stop-price <new_stop>
+   ```
+   Write the new `Hard Stop Price` back to the Notion Positions row.
+
+5. Skip the rest of the decision tree for any position the stop already flattened.
 
 ## Notion state (read at start, write at end)
 

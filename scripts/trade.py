@@ -297,11 +297,25 @@ def _fetch_earnings_context(
         else:
             move_classification = "fade_candidate_skip"
 
+        # Flag reporters whose actuals were filed before the expected window.
+        # AMC reporters with actuals at 9 AM or BMO reporters already in Finnhub the
+        # night before likely pre-announced — the surprise is already priced in.
+        import datetime as _dt2
+        now_et_hour = (_dt2.datetime.utcnow().hour - 4) % 24  # rough ET hour
+        pre_announced = (
+            e.eps_actual is not None
+            and (
+                (e.hour == "amc" and now_et_hour < 15)   # actuals before 3 PM on AMC day
+                or (e.hour == "bmo" and now_et_hour >= 16)  # actuals filed the evening before
+            )
+        )
+
         out.append(
             {
                 "symbol": e.symbol,
                 "date": e.date,
                 "hour": e.hour,
+                "pre_announced": pre_announced,
                 "metrics": (
                     None
                     if m is None
@@ -311,6 +325,7 @@ def _fetch_earnings_context(
                         "exchange": m.exchange,
                         "country": m.country,
                         "industry": m.finnhub_industry,
+                        "short_ratio": m.short_ratio,
                     }
                 ),
                 "print": {
@@ -903,6 +918,7 @@ def cmd_fetch_press_release(args) -> int:
             "primary_doc_url": release.primary_doc_url,
             "item_codes": release.item_codes,
             "guidance_direction": release.guidance_direction,
+            "secondary_offering_detected": release.secondary_offering_detected,
             "char_count": len(release.text),
             "text": release.text,
         }

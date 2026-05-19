@@ -118,6 +118,27 @@ def _classify_guidance_direction(text: str) -> str:
     return "unknown"
 
 
+def _detect_secondary_offering(text: str) -> bool:
+    """Return True if the press release text mentions a concurrent secondary offering.
+
+    A secondary offering announced alongside earnings typically signals dilution,
+    which overrides a beat — the stock often drops 8-12% regardless of EPS quality.
+    """
+    t = text.lower()
+    signals = [
+        "public offering",
+        "secondary offering",
+        "follow-on offering",
+        "shares of common stock offered",
+        "registered direct offering",
+        "at-the-market offering",
+        "atm offering",
+        "underwriters",
+        "underwriting agreement",
+    ]
+    return any(s in t for s in signals)
+
+
 @dataclass(frozen=True)
 class EarningsRelease:
     symbol: str
@@ -128,6 +149,7 @@ class EarningsRelease:
     text: str                  # cleaned HTML-stripped text
     item_codes: list[str]      # e.g. ['2.02', '9.01']
     guidance_direction: str    # "raised" | "maintained" | "lowered" | "withdrawn" | "mixed" | "unknown"
+    secondary_offering_detected: bool  # True if concurrent dilutive offering mentioned — hard skip
     filed_today: bool          # True if 8-K was filed on today's date (late filer = staged entry may not apply)
     is_call_transcript: bool   # True when fetched via item_code="7.01" (conference call transcript)
 
@@ -273,6 +295,7 @@ def fetch_latest_earnings_8k(
             text=text,
             item_codes=item_codes,
             guidance_direction=_classify_guidance_direction(text),
+            secondary_offering_detected=_detect_secondary_offering(text),
             filed_today=(dates[i] == _dt.date.today().isoformat()),
             is_call_transcript=(item_code == "7.01"),
         )

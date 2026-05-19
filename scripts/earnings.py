@@ -139,6 +139,7 @@ class CompanyMetrics:
     country: str
     finnhub_industry: str
     share_class: str                     # "common stock", "etf", "adr", ...
+    short_ratio: float | None = None     # days-to-cover; >5 = high short interest (squeeze risk/amplifier)
 
     def passes_filter(
         self,
@@ -704,6 +705,7 @@ def get_company_metrics(symbol: str) -> CompanyMetrics | None:
     avg_volume_10d = _safe_float(metric.get("10DayAverageTradingVolume"))
     if avg_volume_10d is not None:
         avg_volume_10d *= 1_000_000  # Finnhub returns millions of shares
+    short_ratio = _safe_float(metric.get("shortRatio"))  # days to cover; None = not available
 
     try:
         profile = _with_rate_limit(_client().company_profile2, symbol=sym) or {}
@@ -722,6 +724,7 @@ def get_company_metrics(symbol: str) -> CompanyMetrics | None:
         country=profile.get("country") or "",
         finnhub_industry=profile.get("finnhubIndustry") or "",
         share_class=profile.get("shareClassFIGI") and "common stock" or (profile.get("type") or ""),
+        short_ratio=short_ratio,
     )
 
 
