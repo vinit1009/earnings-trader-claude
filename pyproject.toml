@@ -27,3 +27,6 @@ earnings-trader = "scripts.trade:main"
 [tool.pytest.ini_options]
 testpaths = ["scripts"]
 python_files = ["test_*.py"]
+
+[tool.setuptools]
+packages = ["scripts"]
