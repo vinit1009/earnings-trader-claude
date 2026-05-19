@@ -5,7 +5,7 @@
 
 filters:
   # Liquidity / size — keep mid-cap and up, drop illiquid names
-  min_market_cap_usd: 2_000_000_000      # $2B floor — drops micro-caps
+  min_market_cap_usd: 1_000_000_000      # $1B floor — drops micro-caps
   min_avg_volume: 1_000_000              # 1M shares/day floor — drops illiquid
   min_price: 5.0                          # $5 floor — no penny stocks (extended-hours spreads explode below this)
 
