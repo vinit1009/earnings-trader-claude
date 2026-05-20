@@ -7,6 +7,40 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import datetime as _dt
 
+from edgar import extract_eps_from_text
+
+
+def test_extract_eps_standard_diluted():
+    text = "Net income per diluted share was $0.83 for the quarter, compared to $0.71 a year ago."
+    assert extract_eps_from_text(text) == 0.83
+
+
+def test_extract_eps_dollar_first_format():
+    text = "The company reported $2.34 per diluted share in earnings."
+    assert extract_eps_from_text(text) == 2.34
+
+
+def test_extract_eps_loss_parentheses():
+    text = "The company reported a net loss per diluted share of ($0.12) for the period."
+    result = extract_eps_from_text(text)
+    assert result == -0.12
+
+
+def test_extract_eps_non_gaap_only_returns_none():
+    # Press release that only mentions non-GAAP metrics without standard patterns
+    text = "Adjusted EBITDA margin expanded 200 basis points. Operating cash flow was $450 million."
+    assert extract_eps_from_text(text) is None
+
+
+def test_extract_eps_empty_string_returns_none():
+    assert extract_eps_from_text("") is None
+
+
+def test_extract_eps_large_cap_format():
+    # Common format for large-cap press releases
+    text = "Diluted EPS of $3.64 compared to $2.98 in the prior-year period."
+    assert extract_eps_from_text(text) == 3.64
+
 from trade import _trading_days_between
 
 

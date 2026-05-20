@@ -118,6 +118,46 @@ def _classify_guidance_direction(text: str) -> str:
     return "unknown"
 
 
+def extract_eps_from_text(text: str) -> float | None:
+    """Extract reported diluted EPS from a press release.
+
+    Searches the first 8000 chars (headline section). Tries patterns in order
+    of specificity. Returns negative for losses. Returns None if no reliable
+    match is found — never guesses.
+    """
+    excerpt = text[:8000]
+
+    # Loss in parentheses — two orderings in press releases:
+    # 1. ($0.12) per diluted share  (parens before "per share")
+    # 2. per diluted share of ($0.12)  (parens after "per share")
+    _loss_pats = [
+        r'\(\s*\$\s*([\d,]+(?:\.\d+)?)\s*\)\s+per\s+(?:diluted\s+)?(?:common\s+)?share',
+        r'per\s+(?:diluted\s+)?(?:common\s+)?share[^\n$]{0,40}\(\s*\$\s*([\d,]+(?:\.\d+)?)\s*\)',
+    ]
+    for _lp in _loss_pats:
+        m = re.search(_lp, excerpt, re.I)
+        if m:
+            val = float(m.group(1).replace(',', ''))
+            if val < 500:
+                return -val
+
+    # Positive EPS patterns, most specific first
+    _pos_patterns = [
+        r'\$\s*([\d,]+(?:\.\d+)?)\s+per\s+(?:diluted\s+)?(?:common\s+)?share',
+        r'(?:diluted\s+)?eps\s+(?:of|was|were|is)\s+\$\s*([\d,]+(?:\.\d+)?)',
+        r'(?:net\s+)?(?:earnings|income)\s+per\s+(?:diluted\s+)?share[^\n$]{0,50}\$\s*([\d,]+(?:\.\d+)?)',
+        r'(?:diluted|basic)\s+(?:net\s+)?(?:earnings|income)\s+per\s+(?:diluted\s+)?share[^\n$]{0,50}\$\s*([\d,]+(?:\.\d+)?)',
+    ]
+    for pat in _pos_patterns:
+        m = re.search(pat, excerpt, re.I)
+        if m:
+            val = float(m.group(1).replace(',', ''))
+            if val < 500:
+                return val
+
+    return None
+
+
 def _detect_secondary_offering(text: str) -> bool:
     """Return True if the press release text mentions a concurrent secondary offering.
 

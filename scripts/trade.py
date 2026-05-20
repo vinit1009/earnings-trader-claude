@@ -169,6 +169,7 @@ def _fetch_earnings_context(
     )
     common_stock_only = bool(filters.get("common_stock_only", True))
 
+    edgar_fallback_syms: set[str] = set()
     if args.symbol:
         # Test mode: skip universe filtering, use historical prints.
         events = []
@@ -192,6 +193,28 @@ def _fetch_earnings_context(
         exclude_syms: set[str] = set()
         if getattr(args, "exclude", None):
             exclude_syms = {s.strip().upper() for s in args.exclude.split(",") if s.strip()}
+
+        # EDGAR fallback: when Finnhub hasn't populated eps_actual yet, try to
+        # extract it from the SEC 8-K press release text. Finnhub can lag 30 min
+        # to several hours for AMC reporters — this unblocks scoring immediately.
+        import dataclasses as _dc
+        from edgar import fetch_latest_earnings_8k, extract_eps_from_text as _edgar_extract_eps
+        if require_actuals:
+            patched: list = []
+            for _ev in all_events:
+                if _ev.eps_actual is None and _hour_match(_ev) and _ev.date == target_date.isoformat():
+                    _release = fetch_latest_earnings_8k(_ev.symbol, on_or_after=target_date)
+                    if _release is not None:
+                        _parsed = _edgar_extract_eps(_release.text)
+                        if _parsed is not None:
+                            _ev = _dc.replace(_ev, eps_actual=_parsed)
+                            edgar_fallback_syms.add(_ev.symbol)
+                            logging.info(
+                                "EDGAR EPS fallback: %s eps_actual=%.4f (Finnhub was null)",
+                                _ev.symbol, _parsed,
+                            )
+                patched.append(_ev)
+            all_events = patched
 
         window_events = [
             e
@@ -316,6 +339,7 @@ def _fetch_earnings_context(
                 "date": e.date,
                 "hour": e.hour,
                 "pre_announced": pre_announced,
+                "edgar_fallback": e.symbol in edgar_fallback_syms,
                 "metrics": (
                     None
                     if m is None
